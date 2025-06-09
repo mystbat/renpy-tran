@@ -1,0 +1,30 @@
+
+
+# game/talk.rpy:20
+translate chinese talk_ver_9566fd1f:
+    # ver "It's newly renovated under the new owner. It has serval rooms, but I preferred the open space out here – plenty of dancing, drinking, and fun to be had here."
+    ver "它在新主人手中刚刚翻新完毕。这里有几个房间，但我更喜欢这里开阔的空间——可以跳舞、喝酒，还有各种乐趣。"
+
+# game/talk.rpy:21
+translate chinese talk_ver_23409465:
+    # haz "Well, with so many people dressed the way they are, I can imagine people not waiting to find a room. So what sort of rooms does this place have?"
+    haz "嗯，看到这么多人穿着这样，我猜他们不会等着找房间。那么，这家店有哪些房间呢？"
+
+# game/talk.rpy:22
+translate chinese talk_ver_c4f16425:
+    # ver "They fit everyone's style, from vanilla to kinky. Just remember that no one can force you to do anything – including going into a room you don't wish to enter."
+    ver "它们适合每个人的风格，从保守到另类。请记住，没有人能强迫你做任何事——包括进入你不愿去的房间。"
+
+# game/talk.rpy:31
+translate chinese talk_ver_820ab36b:
+    # ver "She looks like a temptress - a tight figure, elegant curves, with a killer smile. Is she really your wife, Hugo? I don't see a ring – same for you too."
+    ver "她看起来像个诱惑者——紧致的身材，优雅的曲线，带着致命的微笑。霍戈，她真的是你的妻子吗？我没看到戒指——你也是。"
+
+# game/talk.rpy:32
+translate chinese talk_ver_963d1afd:
+    # haz "We left them at home – not sure having them would invite the right or wrong crowd. And going to a strange place with expensive hardware? Anyone can steal them."
+    haz "我们把它们留在家里了——不确定带着它们会不会引来合适或不合适的人群。去陌生的地方带着昂贵的设备？任何人都可能偷走它们。"
+
+# game/talk.rpy:33
+translate chinese talk_ver_exit_8074fc34:
+    # ver

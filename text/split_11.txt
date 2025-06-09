@@ -1,0 +1,35 @@
+
+
+```rpy
+# game/talk.rpy:2043
+translate chinese talk_haz_restroom_a04c60cd:
+    # "Cristal enjoyed it the most since she was showered in “mother's” cum when she did."
+    "克里斯塔尔最喜欢这样了，因为每次她高潮时都会被「妈咪」的精液淋满全身。"
+
+# game/talk.rpy:2044
+translate chinese talk_haz_restroom_a3380822:
+    # haz "Don't try to hide that you're giving me a backhanded compliment by exaggerating; I don't spend hours."
+    haz "别试图用夸张掩饰你是在给我反讽的赞美；我可没花那么多时间。"
+
+# game/talk.rpy:2045
+translate chinese talk_haz_restroom_22aa532a:
+    # haz "Besides, it took years for the Mona Lisa to be finished, so perfection is the aftermath of patience."
+    haz "此外，蒙娜丽莎耗时多年才完成，所以完美是耐心的产物。"
+
+# game/talk.rpy:2046
+translate chinese talk_haz_restroom_e71c28bb:
+    # hug "No offense, babe, but if the Mona Lisa was dressed up the way you are tonight, it wouldn't be the smile that people would be coming to see. Just saying."
+    hug "不，亲爱的，但若蒙娜丽莎今晚打扮成你这样，人们来欣赏的也不会是她的笑容。只是说说。"
+
+# game/talk.rpy:2055
+translate chinese talk_haz_restroom_dfeec014:
+    # haz "My my, someone seems eager to get some attention and action for himself tonight."
+    haz "我的天，有人今晚似乎迫不及待想吸引注意力并获得一些行动。"
+
+# game/talk.rpy:2056
+translate chinese talk_haz_restroom_bd26e9e3:
+    # haz "Is this going to be one of those stories you brag to your guy friends later about fucking your woman in a bathroom?"
+    haz "这会成为你之后向男朋友们吹嘘的那些故事之一吗？关于在浴室里强暴你妻子的。"
+
+# game/talk.rpy:2057
+translate chinese talk_haz_restroom_ef

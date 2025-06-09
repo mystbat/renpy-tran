@@ -1,0 +1,11 @@
+# game/talk.rpy:20
+translate chinese talk_ver_9566fd1f:
+
+    # ver "It's newly renovated under the new owner. It has serval rooms, but I preferred the open space out here – plenty of dancing, drinking, and fun to be had here."
+    ver "It's newly renovated under the new owner. It has serval rooms, but I preferred the open space out here – plenty of dancing, drinking, and fun to be had here."
+
+# game/talk.rpy:21
+translate chinese talk_ver_23409465:
+
+    # haz "Well, with so many people dressed the way they are, I can imagine people not waiting to find a room. So what sort of rooms does this place have?"
+    haz "Well, with so many people dressed the way they are, I can imagine people not waiting to find a room. So what sort of rooms does this place have?"

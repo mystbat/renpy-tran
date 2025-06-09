@@ -1,0 +1,32 @@
+
+
+``` 
+# game/talk.rpy:1840
+translate chinese talk_haz_hall_0d26699d:
+    # hug "Can you blame me? I live with you and spent countless hours seeing your body naked in and out of the shower."
+    hug "你能怪我吗？我与你同住并度过了无数个小时，看着你的身体在淋浴时和淋浴后赤裸着。"
+
+# game/talk.rpy:1841
+translate chinese talk_haz_hall_60f6151f:
+    # hug "And yet, I can't seem to take my eyes off you as if I'm seeing you for the first time."
+    hug "然而，我似乎无法移开目光，仿佛第一次见到你。"
+
+# game/talk.rpy:1842
+translate chinese talk_haz_hall_d44de176:
+    # haz "You've never seen me finger myself, have you? Mmm, most of the time, it's you doing the diddling."
+    haz "你从未见过我自慰，对吧？嗯，大多数时候，都是你在亲昵。"
+
+# game/talk.rpy:1843
+translate chinese talk_haz_hall_a52fb32e:
+    # haz "Maybe after tonight, I'll make a few videos to send your way, motivation to get you to clock out and come home sooner, hmm?"
+    haz "也许今晚过后，我会制作几段视频寄给你，作为促使你早点下班回家的动力，嗯？"
+
+# game/talk.rpy:1851
+translate chinese talk_haz_bar_c01c900c:
+    # hug "Looking for an audience, you naughty girl? Well, let's see, right now, no one, but I mean, it's not new to them."
+    hug "你在寻找观众，调皮的女孩？好吧，让我们看看，此刻无人，但我说的是，这对他们来说并不新鲜。"
+
+# game/talk.rpy:1868
+translate chinese talk_haz_bar_701b0abc:
+    # haz "I'm not running for the hills or passing out because you're here with me. I would have lost it if I had gone by myself, even before both feet stepped through the doorway."
+    haz "我不会逃离山林或晕倒，因为有
