@@ -1,131 +1,163 @@
-import configparser
 import requests
+import configparser
 import os
+import json
+import time
+
+# 获取当前脚本的目录
+current_directory = os.path.dirname(os.path.abspath(__file__))
+
+# 创建保存响应的目录（如果不存在）
+response_dir = os.path.join(current_directory, 'text')
+os.makedirs(response_dir, exist_ok=True)
 
 # 读取配置文件
 config = configparser.ConfigParser()
-config.read('config.ini')
+config_path = os.path.join(current_directory, 'config.ini')
 
-# 获取API配置
-api_key = config['API']['api_key']
-api_url = config['API']['url']
+# 打印调试信息
+print("开始读取配置文件...")
+start_time = time.time()
 
-# 获取模型配置
-model = config['Model']['model']
-max_tokens = int(config['Model']['max_tokens'])
-min_p = float(config['Model']['min_p'])
-temperature = float(config['Model']['temperature'])
-top_p = float(config['Model']['top_p'])
-top_k = int(config['Model']['top_k'])
+# 检查配置文件是否存在
+if not os.path.exists(config_path):
+    # 如果配置文件不存在，创建一个默认配置
+    config.add_section('API')
+    config.set('API', 'url', 'https://api.siliconflow.cn/')
+    config.set('API', 'api_key', '你的API Key')  # 请替换为你的实际API密钥
 
-# 请求头
-headers = {
-    'Authorization': f'Bearer {api_key}',
-    'Content-Type': 'application/json'
+    config.add_section('Model')
+    config.set('Model', 'model', 'deepseek-ai/DeepSeek-R1-0528-Qwen3-8B')
+    config.set('Model', 'max_tokens', '16384')
+    config.set('Model', 'min_p', '0.05')
+    config.set('Model', 'temperature', '0.7')
+    config.set('Model', 'top_p', '0.7')
+    config.set('Model', 'top_k', '50')
+
+    with open(config_path, 'w', encoding='utf-8') as configfile:
+        config.write(configfile)
+    print(f"已创建默认配置文件: {config_path}")
+else:
+    print(f"配置文件已存在: {config_path}")
+
+# 读取配置文件
+try:
+    config.read(config_path)
+    print(f"配置文件读取成功，耗时: {time.time() - start_time:.2f}秒")
+except configparser.Error as e:
+    print(f"配置文件解析错误: {str(e)}")
+    exit()
+
+# 从配置文件获取API参数
+api_url = config.get('API', 'url') + '/v1/chat/completions'
+api_key = config.get('API', 'api_key')
+
+# 从配置文件获取模型参数
+model = config.get('Model', 'model')
+max_tokens = config.getint('Model', 'max_tokens')
+min_p = config.getfloat('Model', 'min_p')
+temperature = config.getfloat('Model', 'temperature')
+top_p = config.getfloat('Model', 'top_p')
+top_k = config.getint('Model', 'top_k')
+
+# 打印模型参数
+print(f"模型参数加载成功:")
+print(f"模型: {model}")
+print(f"最大token数: {max_tokens}")
+print(f"最小p值: {min_p}")
+print(f"温度: {temperature}")
+print(f"top_p: {top_p}")
+print(f"top_k: {top_k}")
+
+# 读取消息文件
+try:
+    print("正在读取消息文件...")
+    start_time = time.time()
+    # 读取消息文本文件
+    with open(os.path.join(current_directory, 'message.txt'), 'r', encoding='utf-8') as message_file:
+        user_message = message_file.read().strip()
+
+    # 读取上下文文件
+    context_file_path = os.path.join(current_directory, 'top_message.json')
+    context_messages = []
+    if os.path.exists(context_file_path):
+        with open(context_file_path, 'r', encoding='utf-8') as context_file:
+            context_messages = json.load(context_file)
+            print(f"已加载上下文消息，共 {len(context_messages)} 条")
+
+    print(f"消息文件读取成功，耗时: {time.time() - start_time:.2f}秒")
+except Exception as e:
+    print(f"文件读取错误: {str(e)}")
+    exit()
+
+# 构建请求参数
+print("正在构建请求参数...")
+start_time = time.time()
+payload = {
+    "model": model,
+    "messages": context_messages + [
+        {
+            "role": "user",
+            "content": user_message
+        }
+    ],
+    "stream": False,
+    "thinking_budget": 4096,
+    "min_p": min_p,
+    "temperature": temperature,
+    "top_p": top_p,
+    "top_k": top_k,
+    "max_tokens": max_tokens,
+    "response_format": {"type": "text"},
 }
 
-# 选择输入方式
-print("请选择输入方式：")
-print("1. 打字输入内容发送给聊天模型")
-print("3. 从pending文件夹中按顺序发送文件给聊天模型")
-choice = input("请输入选项 (1 或 3): ")
+headers = {
+    "Authorization": f"Bearer {api_key}",
+    "Content-Type": "application/json"
+}
 
-if choice == '1':
-    while True:
-        # 打字输入内容
-        user_input = input("请输入内容 (输入 'exit' 退出): ")
-        if user_input.lower() == 'exit':
-            break
-        messages = [
-            {'role': 'system', 'content': 'You are a helpful assistant.'},
-            {'role': 'user', 'content': user_input}
-        ]
+print(f"请求参数构建完成，耗时: {time.time() - start_time:.2f}秒")
+print(f"请求URL: {api_url}")
+print(f"请求参数大小: {len(json.dumps(payload))} 字节")
 
-        # 请求体
-        data = {
-            'model': model,
-            'messages': messages,
-            'max_tokens': max_tokens,
-            'min_p': min_p,
-            'temperature': temperature,
-            'top_p': top_p,
-            'top_k': top_k
-        }
+# 发送请求
+print("正在发送请求到模型API...")
+start_time = time.time()
+response = requests.request("POST", api_url, json=payload, headers=headers)
+print(f"请求发送完成，耗时: {time.time() - start_time:.2f}秒")
 
-        # 发送POST请求
-        response = requests.post(api_url, headers=headers, json=data)
+# 输出响应
+print("收到模型响应，正在处理...")
+start_time = time.time()
 
-        # 检查响应状态码
-        if response.status_code == 200:
-            # 解析响应
-            result = response.json()
-            reply_content = result['choices'][0]['message']['content']
+try:
+    response_data = response.json()
+    print(f"响应状态码: {response.status_code}")
+    print(f"响应内容: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
 
-            # 打印回复内容到屏幕上
-            print('回复:', reply_content)
-        else:
-            print('请求失败:', response.status_code, response.text)
-elif choice == '3':
-    # 从pending文件夹中按顺序发送文件给聊天模型
-    pending_folder = 'pending'
-    solved_folder = 'solved'
-    text_folder = 'text'
+    # 检查响应是否成功 - 只检查HTTP状态码，不检查code字段
+    if response.status_code == 200:
+        # 获取模型反馈内容 - 直接从choices[0].message.content获取
+        model_response = response_data['choices'][0]['message']['content']
 
-    if not os.path.exists(pending_folder):
-        print("pending 文件夹未找到，请检查文件路径。")
-        exit(1)
+        # 定义保存路径
+        save_path = os.path.join(response_dir, 'response.txt')
 
-    if not os.path.exists(solved_folder):
-        os.makedirs(solved_folder)
+        # 确保目录存在
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
-    if not os.path.exists(text_folder):
-        os.makedirs(text_folder)
+        # 只保存模型的回答文本
+        with open(save_path, 'a', encoding='utf-8') as f:
+            # 只保存模型的回答文本，不包含其他内容
+            f.write(model_response + '\n')  # 注意：这里使用了\n而不是/n，因为/n不是有效的换行符
 
-    # 获取pending文件夹中的所有文件并按字母顺序排序
-    files = sorted([f for f in os.listdir(pending_folder) if os.path.isfile(os.path.join(pending_folder, f))])
+        print(f"模型回答已保存到文件: {save_path}")
+    else:
+        # 如果响应不成功，不保存任何内容
+        print(f"响应不成功，状态码: {response.status_code}")
 
-    for file_name in files:
-        file_path = os.path.join(pending_folder, file_name)
+    print(f"响应处理完成，耗时: {time.time() - start_time:.2f}秒")
 
-        # 检查文件是否已处理
-        if file_name.endswith('.solved'):
-            print(f"文件 {file_name} 已处理，跳过...")
-            continue
-
-        with open(file_path, 'r', encoding='utf-8') as file:
-            user_input = file.read()
-            messages = [
-                {'role': 'system', 'content': 'You are a helpful assistant.'},
-                {'role': 'user', 'content': user_input}
-            ]
-
-            # 请求体
-            data = {
-                'model': model,
-                'messages': messages,
-                'max_tokens': max_tokens,
-                'min_p': min_p,
-                'temperature': temperature,
-                'top_p': top_p,
-                'top_k': top_k
-            }
-
-            # 发送POST请求
-            response = requests.post(api_url, headers=headers, json=data)
-
-            # 检查响应状态码
-            if response.status_code == 200:
-                # 解析响应
-                result = response.json()
-                reply_content = result['choices'][0]['message']['content']
-
-                # 打印回复内容到屏幕上
-                print('回复:', reply_content)
-            else:
-                print('请求失败:', response.status_code, response.text)
-
-        # 标记文件为已处理
-        os.rename(file_path, f"{file_path}.solved")
-else:
-    print("无效的选项，请输入 1 或 3。")
-    exit(1)
+except json.JSONDecodeError:
+    print("响应解析错误: 响应内容不是有效的JSON格式")
+    print(f"原始响应: {response.text}")

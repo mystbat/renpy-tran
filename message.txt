@@ -1,11 +1,180 @@
-# game/talk.rpy:20
-translate chinese talk_ver_9566fd1f:
+# game/script_exp.rpy:258
+translate chinese daisylookforfriend_final_77e50e36:
 
-    # ver "It's newly renovated under the new owner. It has serval rooms, but I preferred the open space out here – plenty of dancing, drinking, and fun to be had here."
-    ver "It's newly renovated under the new owner. It has serval rooms, but I preferred the open space out here – plenty of dancing, drinking, and fun to be had here."
+    # hug "You can do it, babe. Not interjecting, just passing on words of encouragement before going back to gagging myself on my wife's panties, that's all."
+    hug "You can do it, babe. Not interjecting, just passing on words of encouragement before going back to gagging myself on my wife's panties, that's all."
 
-# game/talk.rpy:21
-translate chinese talk_ver_23409465:
+# game/script_exp.rpy:259
+translate chinese daisylookforfriend_final_972b2a7d:
 
-    # haz "Well, with so many people dressed the way they are, I can imagine people not waiting to find a room. So what sort of rooms does this place have?"
-    haz "Well, with so many people dressed the way they are, I can imagine people not waiting to find a room. So what sort of rooms does this place have?"
+    # abi "Despite his interruption, he's correct – you got this. I'll guide you if needed, but trust me, when you are turned on, you can master it without much help."
+    abi "Despite his interruption, he's correct – you got this. I'll guide you if needed, but trust me, when you are turned on, you can master it without much help."
+
+# game/script_exp.rpy:261
+translate chinese daisylookforfriend_final_888be950:
+
+    # "Hugo watched as his wife inched closer to another woman's sanctuary. Hazel's soft fingers slowly inspected and danced before committing to the act."
+    "Hugo watched as his wife inched closer to another woman's sanctuary. Hazel's soft fingers slowly inspected and danced before committing to the act."
+
+# game/script_exp.rpy:262
+translate chinese daisylookforfriend_final_c4e0a010:
+
+    # "Hazel's hot breath brushed against Abigail's trimmed regions as Hugo leered with impatience as Abigail lapped her lips – savoring his wife's lingering flavor."
+    "Hazel's hot breath brushed against Abigail's trimmed regions as Hugo leered with impatience as Abigail lapped her lips – savoring his wife's lingering flavor."
+
+# game/script_exp.rpy:263
+translate chinese daisylookforfriend_final_46ac50a2:
+
+    # abi "Are you enjoying the view? Take a good long look – freshly waxed and trimmed this afternoon with organic sugar wax just for tonight. Lucky you, am I right?"
+    abi "Are you enjoying the view? Take a good long look – freshly waxed and trimmed this afternoon with organic sugar wax just for tonight. Lucky you, am I right?"
+
+# game/script_exp.rpy:264
+translate chinese daisylookforfriend_final_45db9081:
+
+    # haz "Yeah, very lucky. Sorry, I'm still trying to digest the situation. I've seen mine when I used a mirror, but I've never seen another one with such...bush."
+    haz "Yeah, very lucky. Sorry, I'm still trying to digest the situation. I've seen mine when I used a mirror, but I've never seen another one with such...bush."
+
+# game/script_exp.rpy:265
+translate chinese daisylookforfriend_final_062638ff:
+
+    # abi "Hahaha! Sorry, it's just been a minute since someone called it a “bush.” Women with a trail of trimmings make for a more memorable experience, you'll see. "
+    abi "Hahaha! Sorry, it's just been a minute since someone called it a “bush.” Women with a trail of trimmings make for a more memorable experience, you'll see. "
+
+# game/script_exp.rpy:267
+translate chinese daisylookforfriend_final_bab81820:
+
+    # haz "I'll take your word for it, then. Okay, here goes nothing, I suppose. Just, don't laugh, okay? *Sigh* Mmm! Um, was that good? I mean, did I do it right?"
+    haz "I'll take your word for it, then. Okay, here goes nothing, I suppose. Just, don't laugh, okay? *Sigh* Mmm! Um, was that good? I mean, did I do it right?"
+
+# game/script_exp.rpy:268
+translate chinese daisylookforfriend_final_9069269d:
+
+    # abi "Yes, but it's going to take more than one lick to get to this creamy center. If you're not feeling comfortable, slide those fingers in too – double pleasure."
+    abi "Yes, but it's going to take more than one lick to get to this creamy center. If you're not feeling comfortable, slide those fingers in too – double pleasure."
+
+# game/script_exp.rpy:269
+translate chinese daisylookforfriend_final_078557e6:
+
+    # hug "Mmmf, if I may interject, if it's too much to handle at once, babe, I'd happily assist. I think with the power of togetherness, we can achieve..."
+    hug "Mmmf, if I may interject, if it's too much to handle at once, babe, I'd happily assist. I think with the power of togetherness, we can achieve..."
+
+# game/script_exp.rpy:270
+translate chinese daisylookforfriend_final_8005f38b:
+
+    # haz "No, you're not going to take my thunder away from me. You've had years of practice, it's time I learned how to do this. Now, go back to sucking my panties."
+    haz "No, you're not going to take my thunder away from me. You've had years of practice, it's time I learned how to do this. Now, go back to sucking my panties."
+
+# game/script_exp.rpy:271
+translate chinese daisylookforfriend_final_7bfe5dd3:
+
+    # hug "Okay, I know when I'm not needed – carry on, mmmf!"
+    hug "Okay, I know when I'm not needed – carry on, mmmf!"
+
+# game/script_exp.rpy:275
+translate chinese daisylookforfriend_final_f05c8ef1:
+
+    # "With guidance, Hazel's soft fingers found wet refuge in Abigail's welcoming slit. Droplets of wet lust ran down her knuckles to Abigail's moaning approval."
+    "With guidance, Hazel's soft fingers found wet refuge in Abigail's welcoming slit. Droplets of wet lust ran down her knuckles to Abigail's moaning approval."
+
+# game/script_exp.rpy:276
+translate chinese daisylookforfriend_final_4fd724a2:
+
+    # "With every thrust of his wife's finger, Hugo's own lust climbed. The sight of his wife pleasuring her new female lover was worth the price of admission."
+    "With every thrust of his wife's finger, Hugo's own lust climbed. The sight of his wife pleasuring her new female lover was worth the price of admission."
+
+# game/script_exp.rpy:277
+translate chinese daisylookforfriend_final_4bb26461:
+
+    # abi "Mmm, you're doing great. See? It's no different from doing it to yourself – only you don't feel the pleasure yourself. How does it feel?"
+    abi "Mmm, you're doing great. See? It's no different from doing it to yourself – only you don't feel the pleasure yourself. How does it feel?"
+
+# game/script_exp.rpy:278
+translate chinese daisylookforfriend_final_a0ae8d60:
+
+    # haz "Wet, wrong, and all-around sexy. Despite years of toying with myself and lusting for this, every second feels like a dream I don't want to wake up from."
+    haz "Wet, wrong, and all-around sexy. Despite years of toying with myself and lusting for this, every second feels like a dream I don't want to wake up from."
+
+# game/script_exp.rpy:279
+translate chinese daisylookforfriend_final_365991e7:
+
+    # abi "I know. My first time was a whirlwind of thrills. But no matter how nervous I was, that feeling of my fingers inside a woman? There's nothing like it, right?"
+    abi "I know. My first time was a whirlwind of thrills. But no matter how nervous I was, that feeling of my fingers inside a woman? There's nothing like it, right?"
+
+# game/script_exp.rpy:282
+translate chinese daisylookforfriend_final_912ca367:
+
+    # haz "It's so sexy as well as unique. I'm not going to forsake cocks for the rest of my life, but I'm not going to be exclusive to them only after tonight."
+    haz "It's so sexy as well as unique. I'm not going to forsake cocks for the rest of my life, but I'm not going to be exclusive to them only after tonight."
+
+# game/script_exp.rpy:283
+translate chinese daisylookforfriend_final_01cbdc13:
+
+    # abi "I'm glad I doubled your options, and at the rate you're going, you'll master it in no time. And don't worry about Hugo, he's enjoying it as much as I am."
+    abi "I'm glad I doubled your options, and at the rate you're going, you'll master it in no time. And don't worry about Hugo, he's enjoying it as much as I am."
+
+# game/script_exp.rpy:303
+translate chinese sex_hazabi_sa_64af0130:
+
+    # abi "Mmm, what's naughtier than tasing another woman's juices? Having her taste her own. Are you sure you don't want a taste? I'm about to hog it all to myself."
+    abi "Mmm, what's naughtier than tasing another woman's juices? Having her taste her own. Are you sure you don't want a taste? I'm about to hog it all to myself."
+
+# game/script_exp.rpy:304
+translate chinese sex_hazabi_sa_66a214f4:
+
+    # haz "I'm sure. Hugo's made out with me after eating me out – I can now see the appeal. Plus, there's no sign of you drying up – there's plenty more for later."
+    haz "I'm sure. Hugo's made out with me after eating me out – I can now see the appeal. Plus, there's no sign of you drying up – there's plenty more for later."
+
+# game/script_exp.rpy:305
+translate chinese sex_hazabi_sa_338e944d:
+
+    # abi "Oh, I'm very well aware of that. I bet your husband would make a finger in the “dyke” joke about now. But, I prefer to let your fingers do the talking."
+    abi "Oh, I'm very well aware of that. I bet your husband would make a finger in the “dyke” joke about now. But, I prefer to let your fingers do the talking."
+
+# game/script_exp.rpy:314
+translate chinese sex_hazabi_sa_808d12fb:
+
+    # haz "You're such a naughty barmaid – making your patrons do such lewd things to you. I have half a mind to bend you over the bar and spank you for everyone to see."
+    haz "You're such a naughty barmaid – making your patrons do such lewd things to you. I have half a mind to bend you over the bar and spank you for everyone to see."
+
+# game/script_exp.rpy:315
+translate chinese sex_hazabi_sa_52cdb93f:
+
+    # abi "Mmm! Ahh! A punishment I will gladly accept. I welcome a bit of public humiliation. Ahh! Perhaps instead of your fingers, you can use a bottle instead."
+    abi "Mmm! Ahh! A punishment I will gladly accept. I welcome a bit of public humiliation. Ahh! Perhaps instead of your fingers, you can use a bottle instead."
+
+# game/script_exp.rpy:316
+translate chinese sex_hazabi_sa_b2cac2ce:
+
+    # haz "You're no stranger to the spotlight. Like you said earlier, we don't want any unwanted attention. The only people who get to watch you squirm and moan are us."
+    haz "You're no stranger to the spotlight. Like you said earlier, we don't want any unwanted attention. The only people who get to watch you squirm and moan are us."
+
+# game/script_exp.rpy:325
+translate chinese sex_hazabi_sa_7d982ed4:
+
+    # abi "Oh god, don't you dare stop – you're hitting the perfect spot. Shit, you are a fast study! I'd credit myself as your teacher, but you did all this on your own."
+    abi "Oh god, don't you dare stop – you're hitting the perfect spot. Shit, you are a fast study! I'd credit myself as your teacher, but you did all this on your own."
+
+# game/script_exp.rpy:326
+translate chinese sex_hazabi_sa_770e8349:
+
+    # haz "That there lies the dilemma. Do I make you cum and make you think it was your efforts that brought it on, or do I make it linger longer, proving it was my own?"
+    haz "That there lies the dilemma. Do I make you cum and make you think it was your efforts that brought it on, or do I make it linger longer, proving it was my own?"
+
+# game/script_exp.rpy:327
+translate chinese sex_hazabi_sa_55d4e2fb:
+
+    # abi "Fuck, I concede – you're a master at finger fucking woman! Don't leave me dangling, it's been forever since I got off this hard! God, yes! That's it! Yes, ahh!"
+    abi "Fuck, I concede – you're a master at finger fucking woman! Don't leave me dangling, it's been forever since I got off this hard! God, yes! That's it! Yes, ahh!"
+
+# game/script_exp.rpy:336
+translate chinese sex_hazabi_sa_complete_dc2f85ce:
+
+    # abi "Damn, you know how to return the favor. Now, I recall saying to you that I owe you two, right? Do you think that you can enjoy a real, girl-to-girl orgasm now?"
+    abi "Damn, you know how to return the favor. Now, I recall saying to you that I owe you two, right? Do you think that you can enjoy a real, girl-to-girl orgasm now?"
+
+# game/script_exp.rpy:338
+translate chinese sex_hazabi_sa_complete_41c32dd4:
+
+    # haz "Mmm, I think I'm ready to if the offer is still open. Never thought that I would get some womanly attention, but to get it twice from the same woman."
+    haz "Mmm, I think I'm ready to if the offer is still open. Never thought that I would get some womanly attention, but to get it twice from the same woman."
+
