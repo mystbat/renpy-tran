@@ -28,11 +28,11 @@ if not os.path.exists(config_path):
 
     config.add_section('Model')
     config.set('Model', 'model', 'deepseek-ai/DeepSeek-R1-0528-Qwen3-8B')
-    config.set('Model', 'max_tokens', '16384')
+    config.set('Model', 'max_tokens', '8192')
     config.set('Model', 'min_p', '0.05')
-    config.set('Model', 'temperature', '0.7')
-    config.set('Model', 'top_p', '0.7')
-    config.set('Model', 'top_k', '50')
+    config.set('Model', 'temperature', '0.2')
+    config.set('Model', 'top_p', '0.9')
+    config.set('Model', 'top_k', '30')
 
     with open(config_path, 'w', encoding='utf-8') as configfile:
         config.write(configfile)
@@ -48,11 +48,10 @@ except configparser.Error as e:
     print(f"配置文件解析错误: {str(e)}")
     exit()
 
-# 从配置文件获取API参数
+# 从配置文件获取参数
 api_url = config.get('API', 'url') + '/v1/chat/completions'
 api_key = config.get('API', 'api_key')
 
-# 从配置文件获取模型参数
 model = config.get('Model', 'model')
 max_tokens = config.getint('Model', 'max_tokens')
 min_p = config.getfloat('Model', 'min_p')
@@ -84,6 +83,15 @@ try:
         with open(context_file_path, 'r', encoding='utf-8') as context_file:
             context_messages = json.load(context_file)
             print(f"已加载上下文消息，共 {len(context_messages)} 条")
+
+    # 检查第一行是否为注释
+    lines = user_message.splitlines()
+    comment_line = None
+    if lines:
+        first_line = lines[0].strip()
+        if first_line.startswith('#') and '.rpy' in first_line:
+            comment_line = first_line
+            print(f"检测到注释行: {comment_line}")
 
     print(f"消息文件读取成功，耗时: {time.time() - start_time:.2f}秒")
 except Exception as e:
@@ -140,16 +148,27 @@ try:
         # 获取模型反馈内容 - 直接从choices[0].message.content获取
         model_response = response_data['choices'][0]['message']['content']
 
-        # 定义保存路径
+        # 先保存到content.txt（覆盖方式）
+        content_path = os.path.join(response_dir, 'content.txt')
+        with open(content_path, 'w', encoding='utf-8') as f:
+            f.write(model_response)
+            f.write('\n')  # 添加换行符
+
+        print(f"模型回答已保存到临时文件: {content_path}")
+
+        # 然后继续原有的保存逻辑，保存到response.txt（追加方式）
         save_path = os.path.join(response_dir, 'response.txt')
 
-        # 确保目录存在
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        # 创建写入内容
+        write_content = []
+        if comment_line:
+            write_content.append(comment_line)
+        write_content.append(model_response)
 
-        # 只保存模型的回答文本
+        # 使用追加模式写入文件
         with open(save_path, 'a', encoding='utf-8') as f:
-            # 只保存模型的回答文本，不包含其他内容
-            f.write(model_response + '\n')  # 注意：这里使用了\n而不是/n，因为/n不是有效的换行符
+            for line in write_content:
+                f.write(line + '\n')
 
         print(f"模型回答已保存到文件: {save_path}")
     else:
