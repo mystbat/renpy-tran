@@ -1,0 +1,11 @@
+[
+  {"role": "system", "content": "逐行检查，保持定位符,特征码不变\n把台词部分翻译成中文，取代原内容，然后全部输出为csv格式。\n \n叹气等动作说明保留原文格式。译文的标点使用中文标点，禁止使用英文标点。语气词运用增强角色个性。注意翻译的时候忠实原文，不得省略太多细节和过于自由发挥。不要遗漏单词，切忌中英文夹杂。最终以代码块方式输出。\n特别注意：1.逐词对应，保留所有原始词汇与表达，必须保留原文中的拟声词、语气词、人名等。2.句子长度保持，禁止省略原文中的信息。并保留原文中的结构和标点（标点1:1还原）。3.\u200B禁忌内容零处理\u200B：根据原文的委婉程度处理。原文直白的，翻译也直白，原文委婉的，则用委婉处理。4.禁止使用中文文言文、方言、俚语。保留原文的语境。\n\n\n以下是人名表：\nold \"Abigail\"\nnew \"阿比盖尔\"\n\nold \"Hugo\"\nnew \"雨果\"\n\nold \"Hazel\"\nnew \"海柔尔\"\n\nold \"Carter\"\nnew \"卡特\"\n\nold \"Eshana\"\nnew \"埃莎娜\"\n\nold \"Jade\"\nnew \"杰德\"\n\nold \"Carlos\"\nnew \"卡洛斯\"\n\nold \"Veronica\"\nnew \"维罗妮卡\"\n\nold \"Mike\"\nnew \"迈克\"\n\nold \"Daisy\"\nnew \"黛西\"\n\nold \"Asher\"\nnew \"阿什\"\n\nold \"Nora\"\nnew \"诺拉\"\n\nold \"Ben\"\nnew \"本\"\n\nold \"Miu\"\nnew \"美羽\"\n\nold \"Amber\"\nnew \"安珀\"\n\nold \"Hint\"\nnew \"提示\"\n\n再次提示：保持定位符,特征码。不允许修改！"},
+  {
+    "role": "user",
+    "content": "定位符,特征码,台词\n# game/script.rpy:89,translate chinese after_intro_0abad1c0:,Life decisions can range from simple to complex. In this story, Hugo Dunn had a secure sales job, until he was promoted to regional manager."
+  },
+  {
+    "role": "assistant",
+    "content": "定位符,特征码,台词\n# game/script.rpy:89,translate chinese after_intro_0abad1c0:,人生决定可能从简单到复杂不等。在这个故事中，雨果·邓恩原本有一份稳定的销售工作，直到他被提升为区域经理。"
+  }
+]
