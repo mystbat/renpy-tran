@@ -5,6 +5,11 @@ config.ini
 *.rpy
 *.rpyc
 *.rpa
+
+# W1 例外：解析链测试样例必须入库（设计 §11 fixtures）。
+# 全局纪律 #5 禁止提交 *.rpy，但 fixtures 是唯一状态文件的解析正确性
+# 归依，须随仓库走；本例外已在交付说明与 ADR-0006 记录。
+!tests/fixtures/**
 csv/
 split_csv/
 csvbak/
@@ -32,6 +37,7 @@ __pycache__/
 .venv/
 .pytest_cache/
 .pytest_tmp/
+.w1_tmp/
 .selfcheck/
 build/
 dist/
