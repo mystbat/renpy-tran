@@ -77,12 +77,14 @@ def test_user_prompt_context_pairs():
 
 
 def test_user_prompt_context_capped_at_three():
+    # DECISION(§4.1)：超出上限时保留**最新**的 3 条（与待翻行最近的上下文最有价值）
     ctx = [(i, f"s{i}", f"t{i}") for i in range(1, 6)]
     text = build_user_prompt([(1, "x")], TermProfile(), context=ctx)
     assert len(ctx) > MAX_CONTEXT_LINES
-    assert "1|s1" in text
-    assert "5|s5" not in text
+    assert "1|s1" not in text
+    assert "2|s2" not in text
     assert "3|s3" in text
+    assert "5|s5" in text
 
 
 def test_user_prompt_without_context_has_no_context_header():
@@ -183,12 +185,13 @@ def test_parse_nonstandard_escape_recovered_by_regex():
 
 
 def test_parse_broken_json_line_is_unparsed():
-    # 单引号 JSON 三层都救不回来 → 计入 unparsed，对应 uid 记为缺失
-    raw = "{'i': 1, 't': '你好'}"
-    out = parse_response(raw, [1])
-    assert out.results == {}
-    assert out.unparsed == ["{'i': 1, 't': '你好'}"]
-    assert out.missing == [1]
+    # 坏 JSON 行（单引号）三层都救不回来 → 计入 unparsed，对应 uid 记为缺失；
+    # 同批里能救回的行照常产出（部分成功不抛异常，避免整批白翻，DECISION(§4.3)）
+    raw = '{"i": 1, "t": "一"}\n{\'i\': 2, \'t\': \'二\'}'
+    out = parse_response(raw, [1, 2])
+    assert out.results == {1: "一"}
+    assert out.unparsed == ["{'i': 2, 't': '二'}"]
+    assert out.missing == [2]
 
 
 def test_parse_skips_prose_lines():
