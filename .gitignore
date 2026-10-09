@@ -1,0 +1,33 @@
+# ---- 密钥与本地配置（ADR-0004：永不入库） ----
+config.ini
+
+# ---- 用户数据 ----
+*.rpy
+*.rpyc
+*.rpa
+csv/
+split_csv/
+csvbak/
+rpybak/
+text/
+output/
+bak/
+pending/
+solved/
+tmp/
+logs/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.pytest_tmp/
+.selfcheck/
+build/
+dist/
+
+# ---- IDE ----
+.idea/
+.vscode/
