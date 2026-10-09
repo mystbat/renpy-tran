@@ -1,0 +1,180 @@
+# game/talk.rpy:1295
+translate chinese talk_dai_main_3f0dbf39:
+
+    # dai "So tell me, are you getting your money's worth and then some?"
+    dai "So tell me, are you getting your money's worth and then some?"
+
+# game/talk.rpy:1296
+translate chinese talk_dai_main_368b5071:
+
+    # haz "Oh my god, yes. I've seen pole dancers on streaming shows, but never up close."
+    haz "Oh my god, yes. I've seen pole dancers on streaming shows, but never up close."
+
+# game/talk.rpy:1297
+translate chinese talk_dai_main_c6517d20:
+
+    # haz "So much muscle and flexibility! I may have to take a pole fitness class after this."
+    haz "So much muscle and flexibility! I may have to take a pole fitness class after this."
+
+# game/talk.rpy:1298
+translate chinese talk_dai_main_5f872473:
+
+    # dai "I'll give you some addresses to the ones I frequent."
+    dai "I'll give you some addresses to the ones I frequent."
+
+# game/talk.rpy:1299
+translate chinese talk_dai_main_77fa0e3b:
+
+    # dai "It may be a far cry from my mother making me do ballet recitals, but she would be somewhat proud of her little girl, knowing I'm putting them to some use."
+    dai "It may be a far cry from my mother making me do ballet recitals, but she would be somewhat proud of her little girl, knowing I'm putting them to some use."
+
+# game/talk.rpy:1308
+translate chinese talk_dai_main_9916f660:
+
+    # dai "Either ignore him or picture a dozen oiled-up bodybuilders with their tongues out and their hands on their dicks."
+    dai "Either ignore him or picture a dozen oiled-up bodybuilders with their tongues out and their hands on their dicks."
+
+# game/talk.rpy:1309
+translate chinese talk_dai_main_2417ebad:
+
+    # dai "Whichever makes you less nervous. Hey, not bad; you're a natural at this. Right, Hugo?"
+    dai "Whichever makes you less nervous. Hey, not bad; you're a natural at this. Right, Hugo?"
+
+# game/talk.rpy:1310
+translate chinese talk_dai_main_58b8df0f:
+
+    # hug "I'm sad to say I forgot to stop at the bank and stock up on some singles."
+    hug "I'm sad to say I forgot to stop at the bank and stock up on some singles."
+
+# game/talk.rpy:1311
+translate chinese talk_dai_main_5608b31d:
+
+    # hug "Had I known I would be treated to a two-girl pole show co-starring my wife, I would have made singles rain in your direction."
+    hug "Had I known I would be treated to a two-girl pole show co-starring my wife, I would have made singles rain in your direction."
+
+# game/talk.rpy:1312
+translate chinese talk_dai_main_291da600:
+
+    # dai "Singles? If you even had them, I'd make you keep them in your pants."
+    dai "Singles? If you even had them, I'd make you keep them in your pants."
+
+# game/talk.rpy:1313
+translate chinese talk_dai_main_734234dd:
+
+    # dai "Girls like your wife and I only take double-digit or higher bills and black credit cards. Know your worth and value and add ten percent to it; that's what I say."
+    dai "Girls like your wife and I only take double-digit or higher bills and black credit cards. Know your worth and value and add ten percent to it; that's what I say."
+
+# game/talk.rpy:1322
+translate chinese talk_dai_main_dc8be490:
+
+    # haz "Do you just want us to mingle? I'll do you one better! Ever made out with a woman to make his husband lose his mind, Daisy?"
+    haz "Do you just want us to mingle? I'll do you one better! Ever made out with a woman to make his husband lose his mind, Daisy?"
+
+# game/talk.rpy:1323
+translate chinese talk_dai_main_104cc2e9:
+
+    # hug "I know you are trying to get under my skin, but I love it either way."
+    hug "I know you are trying to get under my skin, but I love it either way."
+
+# game/talk.rpy:1324
+translate chinese talk_dai_main_8198b845:
+
+    # hug "Don't let me stop you both; do whatever comes naturally, and I'll be here watching and trying to keep my hands to myself."
+    hug "Don't let me stop you both; do whatever comes naturally, and I'll be here watching and trying to keep my hands to myself."
+
+# game/talk.rpy:1325
+translate chinese talk_dai_main_973bbc3b:
+
+    # dai "Not so fast, pal."
+    dai "Not so fast, pal."
+
+# game/talk.rpy:1326
+translate chinese talk_dai_main_c86a1b27:
+
+    # dai "You got the opening act, but for more, you'll have to toss in your money clip and open up your bifold if you want this show to continue with no clothes, no limits, and no privacy."
+    dai "You got the opening act, but for more, you'll have to toss in your money clip and open up your bifold if you want this show to continue with no clothes, no limits, and no privacy."
+
+# game/talk.rpy:1337
+translate chinese talk_dai_main_f2848e58:
+
+    # dai "Temp you? I could do so much more than just that."
+    dai "Temp you? I could do so much more than just that."
+
+# game/talk.rpy:1338
+translate chinese talk_dai_main_48449719:
+
+    # dai "I could take you to some corner in this place, bend over and grab my ankles, and watch and feel you pound away at me till I'm screaming your name at the top of my lungs."
+    dai "I could take you to some corner in this place, bend over and grab my ankles, and watch and feel you pound away at me till I'm screaming your name at the top of my lungs."
+
+# game/talk.rpy:1339
+translate chinese talk_dai_main_64875b4b:
+
+    # hug "Hot damn, you know what to say and how to get me to reach for my wallet to make that happen."
+    hug "Hot damn, you know what to say and how to get me to reach for my wallet to make that happen."
+
+# game/talk.rpy:1340
+translate chinese talk_dai_main_b7618a67:
+
+    # hug "I bet for that kind of action, you're going to drain my account of every penny, aren't you?"
+    hug "I bet for that kind of action, you're going to drain my account of every penny, aren't you?"
+
+# game/talk.rpy:1341
+translate chinese talk_dai_main_778e81cd:
+
+    # dai "Oh no, that's just for me to talk dirty to you."
+    dai "Oh no, that's just for me to talk dirty to you."
+
+# game/talk.rpy:1342
+translate chinese talk_dai_main_ab57e5a6:
+
+    # dai "If you want what I just described, a few more zeros will be added at the end. My mother always told me that if you're good at something, never give it away for free."
+    dai "If you want what I just described, a few more zeros will be added at the end. My mother always told me that if you're good at something, never give it away for free."
+
+# game/talk.rpy:1351
+translate chinese talk_dai_main_7ab87422:
+
+    # dai "Hahaha, really? A $20? I'd be insulted had I not known you weren't so cute and new to this whole thing."
+    dai "Hahaha, really? A $20? I'd be insulted had I not known you weren't so cute and new to this whole thing."
+
+# game/talk.rpy:1352
+translate chinese talk_dai_main_28d65e9c:
+
+    # dai "Do you have any larger bills in your wallet, or is your wife in charge of the finances in your household?"
+    dai "Do you have any larger bills in your wallet, or is your wife in charge of the finances in your household?"
+
+# game/talk.rpy:1353
+translate chinese talk_dai_main_7db863d3:
+
+    # hug "I packed a few more twenties, but I thought they would be for drinks, not tipping a call girl."
+    hug "I packed a few more twenties, but I thought they would be for drinks, not tipping a call girl."
+
+# game/talk.rpy:1354
+translate chinese talk_dai_main_e77c6fde:
+
+    # hug "Can you really fault me? I have never been with a call girl, let alone tipped one."
+    hug "Can you really fault me? I have never been with a call girl, let alone tipped one."
+
+# game/talk.rpy:1355
+translate chinese talk_dai_main_d62bb1e5:
+
+    # dai "Hahaha, no offense, but it does show."
+    dai "Hahaha, no offense, but it does show."
+
+# game/talk.rpy:1356
+translate chinese talk_dai_main_de4db182:
+
+    # dai "But next time, if you ever get a chance to call a girl for your private fun or a bachelor party with others..."
+    dai "But next time, if you ever get a chance to call a girl for your private fun or a bachelor party with others..."
+
+# game/talk.rpy:1357
+translate chinese talk_dai_main_d3954987:
+
+    # dai "...or give your wife an anniversary she won't soon forget, be sure all the bills have three digits on them."
+    dai "...or give your wife an anniversary she won't soon forget, be sure all the bills have three digits on them."
+
+# game/talk.rpy:1366
+translate chinese talk_dai_main_d8bc48a6:
+
+    # dai "Hehehe, I can't tell you the last time I've been with a man who was as gentle as you are."
+    dai "Hehehe, I can't tell you the last time I've been with a man who was as gentle as you are."
+

@@ -1,0 +1,223 @@
+定位符,特征码,台词
+# game/script_exp.rpy:88,translate chinese daisylookforfriend_2_bcdcd76f:,嘘，你的意图可能是好的，但看在老天的份上别那么大声。
+# game/script_exp.rpy:138,translate chinese gal_s_21_b07fd595:,如果一切顺利，我们确实能做那些事。但我羞于承认自己对女同性爱完全是个新手。在这方面雨果可能比我懂得多得多。
+# game/script_exp.rpy:632,translate chinese gal_s_22_bc5d8e98:,这他妈到底怎么回事？你们明明知道强迫她做这种事是违法的！你们会丢掉俱乐部，甚至可能坐牢或者...
+# game/script_exp.rpy:983,translate chinese daihug_sa_complete_4e98d977:,唉，抱歉安珀女神，我的节奏没能达到您的要求。
+# game/script_exp.rpy:986,translate chinese daihug_sa_complete_b808b56c:,不过享受的本不该是你。是时候让她明白这一切都是为了顾客，而不是她自己。让这个婊子被那根肉棒呛死吧！
+# game/script_exp.rpy:999,translate chinese daihug_sa_complete_4bbb2901:,雨果竭尽全力帮助这个无助的女人，但安珀毫不留情地继续羞辱着这个无辜的女孩。
+# game/script_exp.rpy:1028,translate chinese daihug_sb_ac78e1b8:,哈，除了卖身一无是处——我打赌连你的毕业纪念册都选你当'最可能出卖肉体的女生'，你这没脑子的婊子。
+# game/script_exp.rpy:1062,translate chinese daihug_sb_complete_ae5582f7:,别他妈想着吞下去，贱货。给我含在嘴里，听明白了吗？我在跟你说话，贱货——你明白了吗！？
+# game/script_exp.rpy:1064,translate chinese daihug_sb_complete_150448e1:,嗯唔！耶...耶 阿巴布斯 安巴...
+# game/script_exp.rpy:1066,translate chinese daihug_sb_complete_bc688cf0:,或者她可以吐在地上...我是说，然后你可以让她舔干净。我的意思是，如果这'取悦'了您的话，安珀女神。
+# game/script_exp.rpy:1184,translate chinese daisylookforfriend_10_abd797b5:,听起来是个好男人。既然我这么迟钝才明白过来，就像你说的那么精彩，那你收钱到底是为了什么？
+# game/script_exp.rpy:1279,translate chinese gal_s_24_420f79a2:,我猜你喜欢找有心跳的东西，而且我觉得我们对'自愿'这个词的定义截然不同。
+# game/script_exp.rpy:1280,translate chinese gal_s_24_d61ceb2e:,黛西和阿比盖尔想要的东西：一个想要情报，另一个想帮忙。我是个彻头彻尾的生意人——这是一笔公平交易。
+# game/script_exp.rpy:1282,translate chinese gal_s_24_a124b122:,所以你现在这么顺从我——是因为我想要回报？
+# game/script_exp.rpy:1289,translate chinese gal_s_24_a3f563df:,安珀手铐的声音与她悠长的呻吟完美融合，而雨果小心翼翼地保持着缓慢的节奏。
+# game/script_exp.rpy:1291,translate chinese gal_s_24_ce04c633:,嗯，有人不听指挥啊。我说了操我，不是用你那该死的前戏慢慢蹭我。
+# game/script_exp.rpy:1292,translate chinese gal_s_24_bb6cb81e:,戴不戴手铐是你说的，你欠我个人情。所以我的人情意味着我的规矩，我打算榨干你每一分价值让你发疯。
+# game/script_exp.rpy:1296,translate chinese gal_s_24_163b31cd:,不过得先让她尖叫高潮——我是个体贴的情人。但等我完事，你会数不清自己高潮了多少次。
+# game/script_exp.rpy:1297,translate chinese gal_s_24_eef07f8f:,嗯，男人和他们夸大的承诺——你以为我没听过这些？唯一能从我这里得到东西的方法只有一个：暴力。
+# game/script_exp.rpy:1438,translate chinese amb_pants_sb_complete_eeb6f836:,看来有人参加过一两次绳缚研讨会。想给老婆惊喜还是背着我养了个性奴？
+# game/script_exp.rpy:1439,translate chinese amb_pants_sb_complete_33aa3946:,碰巧当了好几年童子军——我绳结技术很拿手，徽章就是证明。
+# game/script_exp.rpy:1535,translate chinese amb_pants_sc_complete_c3cfacb5:,虽然他知道不该招惹像安珀这样的毒蛇，但明白她现在不太可能反击暴露自己。
+# game/script_exp.rpy:2095,translate chinese miu_8_talk_5_eb363c39:,哎呀终于见到你了——等了一整晚就为见你。从你走路姿势就知道你下面有货，老爹。
+# game/script_exp.rpy:2354,translate chinese miuhaz_sc_all_132e566e:,嗯，去他的，我受不了了老爹——看着他们让我湿透了，那根又硬又白的老爹鸡巴快把我逼疯了！
+# game/script_exp.rpy:2459,translate chinese miuhaz_sd_all_632c408d:,(好女孩就该这样——照顾妈妈，伺候爸爸。说到这个...)来吧男孩们，我们的小穴都快冻僵了！
+# game/script_exp.rpy:2463,translate chinese miuhaz_sd_all_99321c35:,这扭动的肉体让雨果和海柔尔都措手不及，他眼睁睁看着妻子被另一个女人插入的同时还被安抚着。
+# game/script_exp.rpy:2464,translate chinese miuhaz_sd_all_300fbefd:,本的粗暴撞击太猛烈了——即使美羽的香舌在她口中舞动。听到美羽的声音，海柔尔真希望本能模仿。
+# game/script_exp.rpy:2465,translate chinese miuhaz_sd_all_35fd61c6:,啊，老爹？呃，本？轻点，你太粗暴了！嗯，我又没打算走，但你不用这么猛插我，呃！
+# game/script_exp.rpy:2466,translate chinese miuhaz_sd_all_70f582b1:,等我慢下来你就喊加速——我知道你们白人女孩怎么玩黑人兄弟。别骗我，你男人就在面前呢。
+定位符,特征码,台词
+# game/talk.rpy:1421,translate chinese iuy_37db9a0e:,所以你打算怎么做？
+# game/talk.rpy:1697,translate chinese talk_car_pink_c0e97a15:,你是说我可以？好吧，我不会停下来问为什么！
+# game/talk.rpy:1698,translate chinese talk_car_pink_84928cff:,天啊，一边是丈夫不仅看着还鼓励我亲吻另一个男人，这种感觉既错得离谱又莫名地令人兴奋。
+# game/talk.rpy:1701,translate chinese talk_car_pink_ca35faed:,一点也不，不过让你的手保持在腰部以上、胸部以下的位置。
+# game/talk.rpy:1702,translate chinese talk_car_pink_4e42db23:,我不太了解杰德，但看她的样子，要是误会你们亲吻之外还有别的动作，她很可能会一拳打过来。
+# game/talk.rpy:1727,translate chinese talk_car_pink_exit_d8929165:,雨果，我很享受和卡洛斯在一起的时光，不过待会儿也很乐意和你聊天。你能过会儿再回来吗？
+# game/talk.rpy:1729,translate chinese talk_car_pink_exit_9cd55e02:,我真的很想再和卡洛斯待一会儿，不过雨果，我们待会儿再叙旧吧。到时候好好聊聊。
+# game/talk.rpy:1731,translate chinese talk_car_pink_exit_23d954ba:,雨果，现在是卡洛斯和我的时间，不过我待会儿很想和你聊天。你能过会儿再回来吗？
+# game/talk.rpy:12,"old ""Try to find out more about the club""",试着多了解一些关于这个俱乐部的事
+# game/talk.rpy:12,"old ""Ask Veronica what she thinks about Hazel""",问问维罗妮卡她对海柔尔的看法
+# game/talk.rpy:12,"old ""Compliment Veronica’s tits in \nfront of your wife""",当着你妻子的面夸维罗妮卡的胸部
+# game/talk.rpy:12,"old ""Back""",返回
+# game/talk.rpy:76,"old ""Order a special drink for Hazel""",为海柔尔点一杯特别的饮料
+# game/talk.rpy:76,"old ""Ask Abigail how she's feeling""",问问阿比盖尔感觉怎么样
+# game/talk.rpy:76,"old ""Show the picture and ask about Ji-Ji""",展示照片并询问关于吉吉的事
+# game/talk.rpy:76,"old ""Ask if she is ready to help \nDaisy find her friend""",问问她是否准备好帮助黛西找她的朋友
+# game/talk.rpy:76,"old ""Order from Abigail a fancy \ndrink for Hazel""",让阿比盖尔为海柔尔点一杯精致的饮料
+# game/talk.rpy:76,"old ""Ask her what she recommends \nto visit at the beginning""",问问她一开始推荐去哪里参观
+# game/talk.rpy:76,"old ""Order a drink for Nora""",为诺拉点一杯饮料
+# game/talk.rpy:76,"old ""Explain the situation with \nNora and ask for help""",向她说明诺拉的情况并寻求帮助
+# game/talk.rpy:76,"old ""Ask Abigail for a room for Jade""",向阿比盖尔要一间给美羽的房间
+# game/talk.rpy:76,"old ""Ask for the red room key""",要一把红色房间的钥匙
+# game/talk.rpy:76,"old ""Ask if there is a special event tonight""",问问今晚是否有特别活动
+# game/talk.rpy:250,"old ""Ask if they have been \ntogether for a long time""",问问他们在一起多久了
+# game/talk.rpy:250,"old ""Compliment Jade in \nfront of her husband""",当着她丈夫的面夸美羽
+# game/talk.rpy:309,"old ""Try to find out if Asher \nfinds your wife attractive""",试着弄清楚阿什是否觉得你妻子有吸引力
+# game/talk.rpy:309,"old ""Inquire him if they can visit his \nwife in the cinema room""",问他是否可以带他们去电影院房间看他妻子
+# game/talk.rpy:352,"old ""Thank them for the invitation""",感谢他们的邀请
+# game/talk.rpy:352,"old ""Encourage Esahana to kiss his wife again, \nas she did at their place""",鼓励埃莎娜再吻一次他的妻子，就像在他们家那样
+定位符,特征码,台词
+# game/script_exp.rpy:2467,translate chinese miuhaz_sd_all_2837417f:,本，我很难和你那样剧烈地扭动身体时亲吻她——放松点！嗯，爸爸的阴茎在我体内融化——就好像我的阴唇是为他而生的！
+# game/script_exp.rpy:2470,translate chinese miuhaz_sd_all_872ac804:,你的阴道感觉像是在把我吸进去！!我很难不更用力、更深地插入它。海柔尔，我感觉怎么样——我是说“妈妈”？
+# game/script_exp.rpy:2471,translate chinese miuhaz_sd_all_217c7891:,呃，这很好！嗯，非常好，我是说!呃，该死的本！嗯，别担心我，专注于和我们的“小宝贝”做爱。妈妈喜欢看到你们俩这么做！
+# game/script_exp.rpy:2502,translate chinese miuhaz_se_424aebb5:,（我知道本一心想改变海柔尔的思维方式，而海柔尔对此毫无反应。如果她屈服了，你觉得她会喜欢还是不喜欢呢？)
+# game/script_exp.rpy:2867,translate chinese gal_s_26_3af8f71b:,嗯，妈妈开始喜欢听到爸爸那样说话——这让妈妈想要爸爸让她怀孕，成为双倍的妈妈。
+# game/script_exp.rpy:3356,translate chinese miu_11_conti_2ff0ff71:,既然你们都能共同照顾我，为什么还要为了我争吵呢？我是说，两个假期，礼物多一倍？孩子怎么会不爱呢？
+# game/script_exp.rpy:3368,translate chinese miu_11_conti_98447fc1:,说到尽心尽力，听起来我们的小宝贝不满意。要么她意志坚强，要么被宠坏了——不管怎样，她都模仿她的母亲。
+# game/script_exp.rpy:3370,translate chinese miu_11_conti_d69ddfb4:,很高兴你说出来了，爸爸真的躲过了一劫。但是亲爱的，妈妈和爸爸能不能照顾好你那种强烈的欲望，这样你就可以去睡觉了呢？
+# game/script_exp.rpy:3371,translate chinese miu_11_conti_46494d33:,嗯，我觉得我不能去睡觉，我不知道你们俩是否有能力做到这一点。
+# game/script_exp.rpy:3372,translate chinese miu_11_conti_ca6959b3:,再加上一个捣蛋鬼——我们确实知道一些处理捣蛋鬼的方法，对吧，爸爸？
+# game/script_exp.rpy:3374,translate chinese miu_11_conti_50f03375:,对，妈妈和我准备好了鞭子——我们应该给她多少舔舐，让她给我们多少舔舐？
+# game/script_exp.rpy:3375,translate chinese miu_11_conti_7ab87047:,只要能让这个难以忍受的任性女儿屈服就行。当我们完成后，你就会恳求妈妈停下来。
+# game/script_exp.rpy:3376,translate chinese miu_11_conti_7aa334e3:,哎呀，是的，妈妈！
+# game/script_exp.rpy:3378,translate chinese miu_11_conti_7f6f7199:,雨果看着那些愉快的秃鹫围绕着它们的幼崽。尽管雨果好奇心极强，他还是允许它们保持隐私，并关上了身后的门。
+# game/script_exp.rpy:3381,translate chinese miu_11_conti_9d34a3a8:,不再紧张的雨果有了头脑清醒的想法，可以与妻子交谈并解决她可能有的心理问题，这样他们就可以回到手头的庆祝活动中来。
+# game/script_exp.rpy:3393,translate chinese miu_12_9e098095:,海柔尔，我刚从……海柔尔那里回来？海柔尔，宝贝，怎么了——你在哭吗？
+# game/script_exp.rpy:3395,translate chinese miu_12_9652c3eb:,我刚才*抽泣*嗯现在还在哭*抽泣*只是...该死！这整晚都搞砸了！*抽泣*我本来想让今晚按照我的计划完美进行的！*抽泣*
+# game/script_exp.rpy:3396,translate chinese miu_12_9285575b:,所以你才拿头撞墙吗？事情没按计划进行也没关系...一切都会好起来的，我保证...
+# game/script_exp.rpy:3398,translate chinese miu_12_66938939:,*抽泣*不，这不好！*抽泣*今晚不该是这样的！*抽泣*我现在...*抽泣*...要怎么面对你？
+# game/script_exp.rpy:3399,translate chinese miu_12_a41ddb26:,你在说什么？海柔尔，你说话没头没脑的...到底怎么回事？
+# game/script_exp.rpy:3400,translate chinese miu_12_52839765:,*抽泣*我...我的意思是，我们本来是来一起玩的，但是...虽然这对我们俩都很重要...*抽泣*...但更多是为了你...*抽泣*...为了我做的事*抽泣*
+# game/script_exp.rpy:3401,translate chinese miu_12_80e0e0a7:,海柔尔，你在打哑谜吗？你想说什么？如果是关于本的事，我已经说过了，我不会再提起他，那混蛋怎么...
+# game/script_exp.rpy:3403,translate chinese miu_12_6cce3140:,*抽泣*雨果？我...我...*抽泣*...我...背叛了你...*抽泣*...和...*抽泣*...我们的邻居...圣克劳德一家。*抽泣*
+# game/script_exp.rpy:3404,translate chinese miu_12_43603fbc:,你...你在说什么？我刚才明明和他们在一起，而且我一直都和你在一起？海柔尔，你开始让我担心了！
+# game/script_exp.rpy:3405,translate chinese miu_12_6f6883ff:,不是今晚...是...*抽泣*...是之前...我们来这里之前。雨果？*抽泣*雨果，我真的很...
+# game/script_exp.rpy:3406,translate chinese miu_12_1b7db6c0:,等等，停下-你需要深呼吸，确保呼吸平稳悠长。冷静下来告诉我，到底怎么回事？
+# game/script_exp.rpy:3408,translate chinese miu_12_8192cb48:,他们给我们寄来这家俱乐部的邀请函后，我一直紧张得要命...不知道来这里会面对什么。所以有一天我邀请他们来家里问清楚。
+# game/script_exp.rpy:3410,translate chinese miu_12_9a0626d7:,所以我猜你的手机和网络都断线了？还是说你联系不上你那个业余色情片爱好者的丈夫？
+# game/script_exp.rpy:3411,translate chinese miu_12_6e762d7c:,但他们确实是专家，我想多了解这家俱乐部的情况。他们带了红酒，然后...嗯...我想你知道后面发生了什么。
+# game/script_exp.rpy:3412,translate chinese miu_12_2820eb71:,其他情况下我可能会让想象填补空白，但今晚不行，这件事也不行。海柔尔。到底发生什么了？
+定位符,特征码,台词
+# game/talk.rpy:352,"old ""Ask Eshana if Hazel is dressed correctly""",问问埃莎娜 海柔尔穿得是否得体
+# game/talk.rpy:352,"old ""Ask Hazel to stay with them for a while""",让海柔尔陪他们待一会儿
+# game/talk.rpy:352,"old ""Ask Hazel to stay with Carter and \nEshana for a while""",让海柔尔陪卡特和埃莎娜待一会儿
+# game/talk.rpy:352,"old ""Ask if the offer to hang out in \nthe cinema room is still up""",问问去电影放映室聚会的邀请还有效吗
+# game/talk.rpy:410,"old ""And I'll miss the fun? If the room \nis vacant, \nwhy wait – let's go!""",那我会错过乐趣吗？如果房间空着，\n还等什么——我们走吧！
+# game/talk.rpy:410,"old ""Try your best to behave before \nI bet back and try to \nkeep your hands \nto yourself, you three""",在我回来之前你们给我老实点，\n把手老老实实放好，你们三个
+# game/talk.rpy:477,"old ""Give Nora the mojito""",把莫吉托递给诺拉
+# game/talk.rpy:477,"old ""So what brought you and Asher here tonight, \nif you don't mind me asking?""",如果不介意我问的话，你和阿什今晚为什么来这里？
+# game/talk.rpy:477,"old ""You're a stone-cold beauty – you don't \nstrike me as the sheepish type""",你是个冷艳美人——给我的感觉可不像害羞的类型
+# game/talk.rpy:477,"old ""Try to touch her face and soothe \nher with kind words""",试着摸摸她的脸，用温柔的话语安慰她
+# game/talk.rpy:477,"old ""Mind if I ask what it is \nthat you do for a living?""",介意我问你是做什么工作的吗？
+# game/talk.rpy:601,"old ""Ask Daisy if she's been here before""",问问黛西以前来过这里吗
+# game/talk.rpy:703,"old ""Tell him you know what \nhe did to his wife""",告诉他你知道他对妻子做了什么
+# game/talk.rpy:703,"old ""Tell Asher you gave Nora \na morning-after pill""",告诉阿什你给诺拉吃了紧急避孕药
+# game/talk.rpy:774,"old ""Tell Mike that Hazel agrees to his terms""",告诉迈克海柔尔同意他的条件
+# game/talk.rpy:774,"old ""Invite Mike for a drink by the bar""",邀请迈克去吧台喝一杯
+# game/talk.rpy:774,"old ""Ask Mike what he thinks about Hazel""",问问迈克对海柔尔的看法
+# game/talk.rpy:774,"old ""Convince Hazel to be kind to Mike""",说服海柔尔对迈克好一点
+# game/talk.rpy:774,"old ""Allow Mike to kiss your wife's cheek""",允许迈克亲吻你妻子的脸颊
+# game/talk.rpy:873,"old ""Ask if the offer to hang out \nin the cinema room is still up""",问问去电影放映室聚会的邀请还有效吗
+# game/talk.rpy:873,"old ""Allow Eshana to mingle with Hazel""",让埃莎娜和海柔尔交流互动
+# game/talk.rpy:873,"old ""Try to compare who's ass is more sexy""",试着比较谁的屁股更性感
+# game/talk.rpy:873,"old ""Kiss with Eshana and let \nHazel watch this""",和埃莎娜接吻，让海柔尔看着
+# game/talk.rpy:873,"old ""Caress her inner thighs \nand kiss her neck""",抚摸她的大腿内侧，亲吻她的脖颈
+# game/talk.rpy:873,"old ""Let her check how hard you are""",让她检查你有多硬
+# game/talk.rpy:873,"old ""Taste her pussy""",尝尝她的私处
+# game/talk.rpy:873,"old ""Ask Hazel to stay with Carter \nand Eshana for a while""",让海柔尔陪卡特和埃莎娜待一会儿
+# game/talk.rpy:873,"old ""Tell that together with Hazel you \nwant to do it with them""",告诉他们你和海柔尔想和他们一起做
+# game/talk.rpy:1027,"old ""Allow Carter to french kiss your wife""",允许卡特和你妻子法式接吻
+# game/talk.rpy:1027,"old ""Ask Hazel to tease him with her ass""",让海柔尔用屁股挑逗他
+定位符,特征码,台词
+# game/script_exp.rpy:3414,translate chinese miu_12_660bac97:,话题令人振奋。我以为酒能缓解紧张，结果反而加剧了——很快我的每个问题得到的回答都让我...欲火焚身。
+# game/script_exp.rpy:3415,translate chinese miu_12_d38b0f53:,等等，你是说你邀请了资深交换夫妻来家里，喝酒，还跟他们讨论性爱？你是不是喝醉了被人占了便宜？
+# game/script_exp.rpy:3416,translate chinese miu_12_bea60a59:,不，完全没有。我只是微醺——我发誓。但回想晚餐时发生的事，埃莎娜亲吻我等等，我...我...邀请他们去了卧室。
+# game/script_exp.rpy:3417,translate chinese miu_12_f5dfb643:,天啊，海柔尔，求你告诉我这是个天大的恶作剧，你刚才没承认在我们的卧室里跟邻居上床——求你了告诉我不是真的。
+# game/script_exp.rpy:3419,translate chinese miu_12_3d8da745:,我后悔极了，但当时感觉...太棒了。埃莎娜指导着我，卡特？他全程都很有绅士风度——我确保他戴了避孕套，他也确实戴了。
+# game/script_exp.rpy:3420,translate chinese miu_12_2f39e288:,你现在觉得一切都值得原谅，就因为另一个男人戴着避孕套在我卧室里、背着我上我老婆？海柔尔...为什么？
+# game/script_exp.rpy:3564,translate chinese gal_s_27_e7f42ee7:,如果她像你这么幸运的话当然会，雨果。在我们现在的男人池里，她有五分之一的机会。
+# game/script_exp.rpy:4073,translate chinese naughtytoyfun_2_7613b3fd:,给我站起来像个年轻淑女的样子！现在，等你们俩的惩罚执行完毕，我会打电话叫你们父母来，把你们都开除。
+# game/script_exp.rpy:5184,translate chinese nun_12_a92da4a2:,别对我也这样啊，胡——啊啊！嗯，操你个混蛋——拔出来这么狠！嗯，你这混蛋我巴不得就是你！
+# game/script_exp.rpy:5191,translate chinese nun_12_0a075ebf:,没有，他连故事都告诉我了。没人起诉——主要是因为他们爽翻天了。要是办公室里的是雨果，我也会这么做。
+# game/script_exp.rpy:1235,"old ""Jump onto her computer and find\nyour information for Daisy""",跳到她的电脑上查找\n黛西需要的信息
+# game/script_exp.rpy:1970,"old ""Miu? I can't even begin to say how \nhot you look right now""",美羽？我简直说不出你\n现在有多性感
+# game/script_exp.rpy:1970,"old ""How do you feel about wearing that \nto the next work Halloween party, babe?""",你觉得下次公司万圣节派对穿这个\n怎么样，宝贝？
+# game/script_exp.rpy:1970,"old ""Miu, you look like a proper streetwalker, \nand not just because you're Asian""",美羽，你活脱脱就是个站街女，\n而且不仅仅因为你是个亚洲人
+# game/script_exp.rpy:1970,"old ""Enough of the teasing, let's get this \nparty started, people!""",别再调情了，让派对\n开始吧各位！
+# game/script_exp.rpy:2142,"old ""Be stunned into silence as she \nworships your manhood""",被她崇拜你的肉棒\n惊得说不出话
+# game/script_exp.rpy:2142,"old ""Call her “Daddy's little whore”\nand see how she reacts""",叫她“爸爸的小婊子”\n看看她什么反应
+定位符,特征码,台词
+# game/talk.rpy:1027,"old ""Let her enjoy his manhood in her hands""",让她尽情把玩他那雄性的魅力
+# game/talk.rpy:1088,"old ""Ask Jade how her evening went""",问问杰德今晚过得怎么样
+# game/talk.rpy:1088,"old ""Tell Jade you got a room \nfor them tonight""",告诉杰德你已经为他们订好了今晚的房间\n
+# game/talk.rpy:1112,"old ""Ask her to sit on a piano """,让她坐在钢琴上
+# game/talk.rpy:1112,"old ""Request short performance \non a pole""",要求她在钢管上表演\n一段简短的节目
+# game/talk.rpy:1112,"old ""Smack her ass and say she is so hot""",拍拍她的屁股说她真辣
+# game/talk.rpy:1112,"old ""Tell Hazel to follow you""",叫海柔尔跟着你
+# game/talk.rpy:1112,"old ""Ask Hazel to stay with Carter and Eshana for a while""",让海柔尔暂时陪着卡特和埃莎娜
+# game/talk.rpy:1180,"old ""Let Hazel know about Mike's offer""",告诉海柔尔迈克的提议
+# game/talk.rpy:1180,"old ""Talk about the incident with Ben""",聊聊本那件事
+# game/talk.rpy:1180,"old ""Give her a drink and invite \nto a more private place""",给她一杯酒然后邀请她\n去个更私密的地方
+# game/talk.rpy:1180,"old ""Touch her nose and smile to her""",摸摸她的鼻子对她笑一笑
+# game/talk.rpy:1180,"old ""Push her on the wall \nand kiss her chest""",把她推到墙上\n亲吻她的胸口
+# game/talk.rpy:1180,"old ""Put a hand under her panties""",把手伸进她的内裤下面
+# game/talk.rpy:1180,"old ""Tell Hazel what Mike and you discussed""",告诉海柔尔你和迈克讨论了什么
+# game/talk.rpy:1180,"old ""Invite Hazel to the toy party""",邀请海柔尔参加玩具派对
+# game/talk.rpy:1272,"old ""Take her to the more private place and tell\nher what happened in Amber's office""",带她去更私密的地方 \n告诉她在安珀办公室发生的事
+# game/talk.rpy:1272,"old ""Guide her to the Amber's office""",带她去安珀的办公室
+# game/talk.rpy:1272,"old ""Get to the truth about Ji-Ji""",弄清楚吉吉的真相
+# game/talk.rpy:1272,"old ""Give Daisy the info on about Ji-Ji""",把吉吉的信息告诉黛西
+# game/talk.rpy:1272,"old ""Smile to her and ask \nfor a sexy pose""",对她微笑\n并要一个性感的姿势
+# game/talk.rpy:1272,"old ""Encourage Hazel to join \nDaisy on the stage""",鼓励海柔尔\n和黛西一起上台
+# game/talk.rpy:1272,"old ""Encourage your wife to mingle \nwith Daisy in front of everyone""",鼓励你的妻子\n在大家面前和黛西打成一片
+# game/talk.rpy:1272,"old ""Ask her to tempt you""",让她来诱惑你
+# game/talk.rpy:1272,"old ""Tip her and compliment her style""",给她小费并称赞她的风格
+# game/talk.rpy:1272,"old ""Kiss her inner thighs""",亲吻她的大腿内侧
+# game/talk.rpy:1408,"old ""Talk about Veronica's offer""",聊聊维罗妮卡的提议
+# game/talk.rpy:1408,"old ""Tell Carlos about the toy exhibition""",告诉卡洛斯关于玩具展览的事
+# game/talk.rpy:1429,"old ""Ask Veronica what she would recommend\nto Hazel as a first-timer""",问问维罗妮卡她会推荐\n什么给第一次来的海柔尔
+# game/talk.rpy:1429,"old ""Try to figure out if Veronica \nfinds Hazel attractive""",试着弄清楚维罗妮卡是否\n觉得海柔尔有吸引力
+# game/talk.rpy:1429,"old ""Tell your wife you would like to \nsee her kissing with Veronica""",告诉你的妻子\n你想看她亲吻维罗妮卡
+# game/talk.rpy:1429,"old ""Find out if she likes your company""",看看她是否喜欢你的陪伴
+# game/talk.rpy:1429,"old ""Tell her she fascinates you""",告诉她你被她迷住了
+# game/talk.rpy:1429,"old ""Move further and touch her breasts""",再靠近些抚摸她的乳房
+# game/talk.rpy:1546,"old ""Compliment her outfit""",赞美她的穿着
+# game/talk.rpy:1546,"old ""Ask Hazel what she thinks \nabout Jade's pierced nipples""",问问海柔尔对杰德\n穿环的乳头有什么看法
+# game/talk.rpy:1546,"old ""Encourage them to kiss each other""",鼓励她们互相亲吻
+# game/talk.rpy:1546,"old ""Tell Jade you love her perfect curves""",告诉杰德你爱她完美的曲线
+# game/talk.rpy:1546,"old ""Ask her to present you super sexy move""",让她给你展示超级性感的动作
+# game/talk.rpy:1546,"old ""Step closer and put your tongue \nbetween her tits""",再靠近些把舌头\n伸进她的双乳之间
+# game/talk.rpy:1666,"old ""Ask Hazel to sit on his lap""",让海柔尔坐在他腿上
+# game/talk.rpy:1666,"old ""Allow Hazel to kiss Carlos \nin front of you""",允许海柔尔当着你的面\n亲吻卡洛斯
+# game/talk.rpy:1666,"old ""Let Carlos check how \nwet she is""",让卡洛斯\n检查她有多湿
+# game/talk.rpy:1741,"old ""Tell her Abigail's proposal""",告诉她阿比盖尔的提议
+# game/talk.rpy:1741,"old ""Pretend she is the hostess""",假装她是女主人
+# game/talk.rpy:1741,"old ""Ask her to flash you with her tits""",让她给你展示她的乳房
+# game/talk.rpy:1741,"old ""Put her hands on the counter \nand kiss her ass cheeks""",把她的手放在\n柜台上亲吻她的臀瓣
+# game/talk.rpy:1802,"old ""Ask her to seduce you""",让她诱惑你
+# game/talk.rpy:1802,"old ""Tell her to strike a sexy pose""",让她摆出性感的姿势
+# game/talk.rpy:1802,"old ""Request her to play in \nfront of you""",要求她在\n你面前表演
+# game/talk.rpy:1860,"old ""Have some shots with her""",和她一起喝几杯
+# game/talk.rpy:1860,"old ""Finger her on the chair""",在椅子上用手指玩弄她
+# game/talk.rpy:1860,"old ""Ask her to play with your cock""",让她玩弄你的阴茎
+# game/talk.rpy:1914,"old ""Put a hand on her thighs \nand talk with her""",把手放在她大腿上\n和她说话
+# game/talk.rpy:1914,"old ""Suck her nipple""",吮吸她的乳头
+# game/talk.rpy:1914,"old ""Present your cock to her""",把你的阴茎展示给她看
+# game/talk.rpy:1972,"old ""Tell her you found a couple \nto play with tonight""",告诉她你今晚\n找到了一对玩伴
+# game/talk.rpy:1972,"old ""Flirt with Hazel and remind \nher of the school times""",和海柔尔调情\n并提醒她学生时代的事
+# game/talk.rpy:1972,"old ""Put your hand into a hole \nand joke about it""",把手伸进洞\n里然后开玩笑
+# game/talk.rpy:1972,"old ""Rise her leg and kiss \nher panties""",抬起她的腿\n亲吻她的内裤
+# game/talk.rpy:2035,"old ""Fix her hair in front \nof the mirror""",在镜子前帮她整理头发
+# game/talk.rpy:2035,"old ""Push her on sofa and kiss her""",将她推到沙发上亲吻她
+# game/talk.rpy:2035,"old ""Put her on the sink \nand kiss her inner thighs""",把她放在洗手池上亲吻她的大腿内侧
+# game/talk.rpy:2091,"old ""Hold her in your arms \nand kiss with her""",将她拥入怀中与她接吻
+# game/talk.rpy:2091,"old ""Whisper something dirty \nto her ear""",在她耳边低语些下流的话
+# game/talk.rpy:2091,"old ""Command her to put a \nhand inside your pants""",命令她将手伸进你的裤子
+# game/talk.rpy:2149,"old ""Compliment how good she looks\nin this golden lingerie""",称赞她穿上这条金色蕾丝内衣有多迷人
+# game/talk.rpy:2149,"old ""Touch her knee and flirt with her""",轻抚她的膝盖与她调情
+# game/talk.rpy:2149,"old ""Tell her you're both ready to swing""",告诉她你们都已准备好尝试交换伴侣
+# game/talk.rpy:2179,"old ""Find out what she thinks \nabout Miu and Ben""",探听她对美羽和本的看法
+# game/talk.rpy:2179,"old ""Ask her if you can kiss her""",询问她是否可以亲吻她
+# game/talk.rpy:2179,"old ""Eaves drop on them""",偷听他们的谈话
+# game/talk.rpy:2216,"old ""Ask him if it's his \nfirst time here""",问他是否是第一次来这里
+# game/talk.rpy:2216,"old ""Try to find out what he \nthinks about Hazel""",试图了解他对海柔尔的看法
+# game/talk.rpy:2216,"old ""Confront Ben about what \nhe did to Hazel""",质问本他对海柔尔做了什么
+# game/talk.rpy:2216,"old ""Ask for a smoke and their \nplans for tonight""",讨根烟并询问他们今晚的计划
+# game/talk.rpy:2259,"old ""So Miu, how are you \nand Eshana getting along?""",那么美羽，你和埃莎娜相处得如何？
+# game/talk.rpy:2259,"old ""Stay back and listen in \non their conversation""",退后一步偷听他们的谈话
+# game/talk.rpy:2320,"old ""I take it you and Eshana \nare enjoying Miu's company?""",我猜你和埃莎娜很喜欢美羽的陪伴？
+# game/talk.rpy:2320,"old ""Stay back and listen \nin on their conversation""",退后一步偷听他们的谈话
+# game/talk.rpy:2342,"old ""Ask for information about \nTheodore and Ji-Ji""",打听关于西奥多和吉吉的消息
+# game/talk.rpy:2342,"old ""Seduce Amber for information on Theodore""",色诱安珀获取有关西奥多的情报

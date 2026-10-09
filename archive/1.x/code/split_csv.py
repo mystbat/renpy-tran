@@ -56,8 +56,8 @@ def split_csv_files():
 
             # 分割CSV文件
             for i in range(num_parts):
-                start_row = i * 30 + 1  # 跳过表头
-                end_row = min(start_row + 29, total_rows)
+                start_row = i * 30  # 从第0行开始（包含表头）
+                end_row = min(start_row + 30, total_rows)
 
                 # 创建输出文件名
                 base_name = os.path.basename(csv_file).replace('.csv', '')
@@ -71,7 +71,6 @@ def split_csv_files():
 
                     # 写入数据行 - 只保留需要的三列
                     for row in rows[start_row:end_row]:
-                        # 确保行有足够的列数
                         if len(row) >= 5:  # 至少需要5列才能获取台词
                             writer.writerow([row[0], row[1], row[4]])
                         else:
@@ -83,11 +82,11 @@ def split_csv_files():
             # 移动原文件到csvbak目录
             bak_file_path = os.path.join(csvbak_dir, csv_file)
             try:
-                shutil.move(file_path, bak_file_path)
-                print(f"已将原文件移动到备份目录: {bak_file_path}")
+                shutil.copy2(file_path, bak_file_path)
+                print(f"已将原文件复制到备份目录: {bak_file_path}")
             except Exception as e:
-                print(f"移动文件时出错: {str(e)}")
-                print("原文件未移动，请手动备份原文件")
+                print(f"复制文件时出错: {str(e)}")
+                print("原文件未复制成功，请手动备份原文件")
 
         print("-" * 50)
 

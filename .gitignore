@@ -16,6 +16,14 @@ pending/
 solved/
 tmp/
 logs/
+txt/
+split_files/
+bakup/
+rpy/
+package/
+archive/2.0/
+archive/package/
+archive/1.x/workspace/
 
 # ---- Python ----
 __pycache__/
