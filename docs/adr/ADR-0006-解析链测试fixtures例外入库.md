@@ -1,0 +1,33 @@
+# ADR-0006：解析链测试 fixtures 例外入库
+
+- 日期：2026-10-09
+- 状态：已接受
+- 影响范围：仓库根 `.gitignore`、`.gitattributes`、`tests/fixtures/**`、全局纪律 #5
+
+## 背景
+
+全局纪律 #5 规定「永不提交 `*.rpy`（游戏文件）」，以防把用户游戏脚本误入仓库。
+但 W1 解析链的验收标准是**逐字节往返一致**（设计 §11：parse → regenerate → 逐字节一致），
+覆盖 CRLF、BOM、转义引号、`{w}`/`[var]`、单引号、连续空行、角色名带空格、nvl/无角色、
+以及「无法归类的块」原样保留（§14）等样本类别。这些样例是解析器正确性的**唯一状态归依**，
+必须随仓库走，否则异地 `pytest` 无法复现。
+
+## 决策
+
+- 在 `.gitignore` 加入负向例外 `!tests/fixtures/**`，只允许该目录的 `*.rpy` 入库，其余 `*.rpy` 仍被忽略。
+- 在 `.gitattributes` 对该目录加 `-text`，禁止 `core.autocrlf` 归一化行尾，
+  保 `translate_basic_crlf.rpy` 的 CRLF 与 `translate_basic_bom.rpy` 的 BOM 字节级精确。
+- `tests/fixtures/**` 仅承载静态样例，不含任何真实游戏目录内容。
+
+## 理由
+
+- 不被选的替代方案是「fixtures 不入库、改由测试临时生成」：生成逻辑本身会引入解析假设，
+  与「样例即真值」的验收目标相悖，且无法表达 CRLF/BOM 这类需原生字节的样本；故否决。
+- 另一种替代是「把纪律 #5 整体放宽」：会重新打开误提交真实游戏脚本的风险，故否决。
+  负向例外把豁免收窄到单一测试目录，兼顾两者。
+
+## 后果
+
+- 正面：W1 及后续解析链测试可在任意环境 `python -m pytest tests/test_parser_roundtrip.py -q` 全绿，
+  且 CRLF/BOM 用例字节精确。
+- 负面/注意：`tests/fixtures/` 下的 `.rpy` 不再受纪律 #5 保护，新增样例时须确认其为抽象样例而非真实游戏片断。
