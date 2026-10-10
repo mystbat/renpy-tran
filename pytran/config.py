@@ -31,6 +31,8 @@ timeout = 120
 max_retry_rounds = 3
 round_budget_cap = 5
 keep_declare_rate_limit = 0.15
+keep_declare_min_batch = 5
+keep_declare_min_total = 20
 
 [Game]
 language = chinese
@@ -50,6 +52,8 @@ _INI_SECTION_MAP: dict[tuple[str, str], str] = {
     ("Engine", "max_retry_rounds"): "max_retry_rounds",
     ("Engine", "round_budget_cap"): "round_budget_cap",
     ("Engine", "keep_declare_rate_limit"): "keep_declare_rate_limit",
+    ("Engine", "keep_declare_min_batch"): "keep_declare_min_batch",
+    ("Engine", "keep_declare_min_total"): "keep_declare_min_total",
     ("Game", "language"): "language",
     ("Game", "renpy_sdk_dir"): "renpy_sdk_dir",
 }
@@ -70,7 +74,9 @@ class Config:
     timeout: float = 120.0               # 请求超时秒（§4.1）
     max_retry_rounds: int = 3            # 重译轮上限（config 不得超过 round_budget_cap，§5.3）
     round_budget_cap: int = 5            # 代码硬上限（§5.3 无条件终止线）
-    keep_declare_rate_limit: float = 0.15  # §5.4 申报率异常闸
+    keep_declare_rate_limit: float = 0.15  # §5.4 申报率阈值（ADR-0006 双口径）
+    keep_declare_min_batch: int = 5      # §5.4 单批降级的最小样本量（ADR-0006）
+    keep_declare_min_total: int = 20     # §5.4 累计闸的最小样本量（ADR-0006）
     language: str = "chinese"            # tl 目录语言名（§8.3）
     renpy_sdk_dir: str = ""              # §8.5；空 = 未配置
     profile_path: str = "profile.json"   # §7.2
@@ -131,7 +137,8 @@ class Config:
             cp.write(f)
 
     def _coerce_types(self) -> None:
-        for int_attr in ("max_tokens", "max_workers", "max_retry_rounds", "round_budget_cap"):
+        for int_attr in ("max_tokens", "max_workers", "max_retry_rounds", "round_budget_cap",
+                         "keep_declare_min_batch", "keep_declare_min_total"):
             try:
                 setattr(self, int_attr, int(getattr(self, int_attr)))
             except (TypeError, ValueError):
