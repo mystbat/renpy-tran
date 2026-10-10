@@ -23,9 +23,10 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "DEFAULT_SYSTEM_PROMPT", "KEEP_DECLARE_HINT", "MAX_CONTEXT_LINES",
-    "ParseResult", "build_system_prompt", "build_user_prompt", "build_messages",
+    "ParseResult", "KeepDeclareAccumulator",
+    "build_system_prompt", "build_user_prompt", "build_messages",
     "build_request_params", "normalize_keep_flag", "parse_response",
-    "MAX_CONTEXT_LINES", "KEEP_DECLARE_RATE_MIN_ROWS",
+    "KEEP_DECLARE_MIN_BATCH", "KEEP_DECLARE_CUM_MIN_ROWS",
 ]
 
 # §4.1 系统提示词（设计文档原文五条规则；OpenAI 标准 messages 结构）
@@ -48,12 +49,19 @@ KEEP_DECLARE_HINT = (
 
 MAX_CONTEXT_LINES = 3
 
-# §5.4 护栏 4 的最小样本量：低于此行数的批次不启用申报率闸。
-# DECISION(§5.4 护栏4)：申报只在**重试轮的小请求**（几行）注入，而 15% 阈值是按
-# 正常批（数十行）标定的——3 行里申报 1 行即 33%，会 100% 触发降级，令申报机制
-# 完全失效。故设行数下限：小样本交给护栏 1/2（逐条人工裁定）把关，
-# 大样本才启用比例闸。这是把「比例闸」放回它真正能工作的口径上。
-KEEP_DECLARE_RATE_MIN_ROWS = 8
+# §5.4 护栏 4（双闸）：批次口径的最小样本量下限。
+# DECISION(§5.4 护栏4 双闸)：申报只在**重试轮的小请求**（几行）注入，而 15% 阈值是
+# 按正常批（数十行）标定的——小于 5 行的批次里，任意一次申报都轻易超过 15%
+# （3 行申报 1 行即 33%），会令申报机制完全失效。故设批内样本下限 5：
+# 小批次不触发批次降级闸，只逐条计入项目级累计计数器（靠护栏 1/2 人工裁定把关）；
+# 仅当批内样本 ≥5 且申报率 > 阈值才整批降级。这是把「比例闸」放回它真正能工作的口径上。
+KEEP_DECLARE_MIN_BATCH = 5
+
+# §5.4 护栏 4（双闸）：累计口径的最小样本量下限。
+# 累计闸用于在单批口径放过的小批次中揪出「系统性滥用」——模型每批都申报一大半，
+# 但因每批都 <5 行而逃过单批闸。累计样本（计入的行数）达到此下限且累计申报率 > 阈值时，
+# 触发项目级全局告警，并通过 `KeepDeclareAccumulator.degrade_mode` 进入降级模式。
+KEEP_DECLARE_CUM_MIN_ROWS = 20
 
 # §4.2 第二层：JSON 行级正则（容忍非法转义，如 \q）
 _JSON_LINE_RE = re.compile(r'\{\s*"i"\s*:\s*(\d+)\s*,\s*"t"\s*:\s*"((?:[^"\\]|\\.)*)"')
@@ -78,6 +86,66 @@ class ParseResult:
     rejected: dict[int, str] = field(default_factory=dict)  # 申报但文本被改 → 原因码
     downgraded: list[int] = field(default_factory=list)     # 护栏 4 批量降级
     alert: str | None = None
+    # 累计闸：本批逐次计入累计计数器后，若累计口径触发则本批告警
+    # （不逐批降级——已逐条进人工裁定；告警用于提示系统性滥用）。
+    cumulative_alert: str | None = None
+
+
+@dataclass
+class KeepDeclareAccumulator:
+    """§5.4 护栏 4（双闸）的项目级累计计数器。
+
+    由引擎（W3）持有一个长生命周期实例，每次 `parse_response` 解析完一批后，
+    调用 `record(batch_rows, batch_declared)` 把本批口径的「行数」与「被申报行数」
+    累计进来。累计口径独立于单批闸：当累计样本（计入的行数）≥ `cum_min_rows`
+    且累计申报率 > `rate_limit` 时，置 `degrade_mode=True` 并发出全局告警。
+
+    为何需要累计闸：单批闸要求批内样本 ≥ `min_batch`（默认 5）才启用比例判定，
+    因此 `<5` 行的批次永不触发单批降级——这正是为让单行/小批的合法申报（人名、
+    拟声词）能存活。但若是「系统性滥用」（每批都申报一大半，只是每批都 <5 行），
+    单批闸会全部放过。累计闸跨批次聚合，把这种「每批都超率、但每批都因样本小而逃掉」
+    的模式逮出来。
+
+    设计要点：
+    - 计入的是「**批内实际返回且被请求的行数**」而非「申报成功的行数」，因为累计闸
+      衡量的是模型整体申报倾向，分母应是它声称完成的工作量；
+    - 一旦 `degrade_mode` 置位即**不可逆**（直到项目重置），避免滥用者靠偶发低申报率
+      把标志洗回去；这把「降级模式」作为对系统性行为的判定而非逐批状态。
+    - 降级模式是「全局告警 + 降级处置」的开关：进入后引擎可对后续批次收紧（例如
+      不再注入申报提示、或把申报行一律当 UNTRANSLATED 重译），具体处置由 W3 决定。
+    """
+
+    rate_limit: float = 0.15
+    min_batch: int = KEEP_DECLARE_MIN_BATCH
+    cum_min_rows: int = KEEP_DECLARE_CUM_MIN_ROWS
+    total_rows: int = 0
+    total_declared: int = 0
+    degrade_mode: bool = False
+
+    def record(self, batch_rows: int, batch_declared: int) -> None:
+        """逐批累计；累计口径触发则置 `degrade_mode`（置位后不可逆）。"""
+        if batch_rows <= 0:
+            return
+        self.total_rows += int(batch_rows)
+        self.total_declared += int(batch_declared)
+        if self.degrade_mode:
+            return
+        if self.total_rows >= self.cum_min_rows:
+            rate = self.total_declared / self.total_rows
+            if rate > self.rate_limit:
+                self.degrade_mode = True
+
+    def cumulative_rate(self) -> float:
+        return self.total_declared / self.total_rows if self.total_rows else 0.0
+
+    def cumulative_alert_message(self) -> str | None:
+        if not self.degrade_mode:
+            return None
+        return (
+            f"项目级累计申报率 {self.cumulative_rate():.0%}"
+            f"（{self.total_declared}/{self.total_rows}，达 {self.cum_min_rows} 行样本下限）"
+            f"超过阈值 {self.rate_limit:.0%}：进入降级模式，申报行为疑似系统性滥用"
+        )
 
 
 def build_system_prompt(profile: TermProfile | None = None) -> str:
@@ -266,6 +334,7 @@ def parse_response(
     allow_keep_declare: bool = False,
     sources: Mapping[int, str] | None = None,
     keep_declare_rate_limit: float = 0.15,
+    accumulator: "KeepDeclareAccumulator | None" = None,
 ) -> ParseResult:
     """§4.2 三层解析 + §5.4 四道护栏。
 
@@ -273,7 +342,10 @@ def parse_response(
     - `requested_ids`：本批请求的编号（V1 判定基准，多余编号一律丢弃）；
     - `allow_keep_declare`：是否注入了申报选项（§5.4 注入时机——只有重试轮才为 True）；
     - `sources`：`uid → 原文`，护栏 2 校验 `t==source` 必需；
-    - `keep_declare_rate_limit`：护栏 4 的批次申报率阈值（默认 0.15）。
+    - `keep_declare_rate_limit`：护栏 4 的批次申报率阈值（默认 0.15）；
+    - `accumulator`：§5.4 护栏 4（双闸）的项目级累计计数器；传入则本批口径的
+      「行数 / 被申报行数」会逐次计入，累计口径越阈时 `result.cumulative_alert`
+      带上全局告警（不入 `downgraded`——已逐条进人工裁定）。为 None 时按单批闸独立判定。
 
     DECISION(§4.3)：三层**全部**失败（连一行都救不回来）才抛 `ProtocolError`；
     只要解析出行就不抛，未解析出的行记入 `unparsed` 且对应编号进 `missing`，
@@ -320,25 +392,41 @@ def parse_response(
         reasons = _extract_reasons(raw)
         pending_keep = {uid: (text, reasons.get(uid, "")) for uid, (text, _) in pending_keep.items()}
 
-    # §5.4 护栏 4：批次申报率超阈值 → 全部申报降级为普通文本并告警。
-    # DECISION(§5.4 护栏4)：分母取**本批实际返回行数**——护栏测的是"模型对已产出
-    # 内容的偷懒比例"，返回行数即它声称完成的工作量；用请求行数做分母时，模型
-    # 少返回（缺行）反而会稀释申报率，等于奖励少答。缺行由 V1 单独处理，不重复惩罚。
+    # §5.4 护栏 4（双闸）
+    # 批次口径：分母取**本批实际返回且被请求的行数**（理由见下）；低于 KEEP_DECLARE_MIN_BATCH
+    # 行的批次不触发单批降级闸——单行/人名/拟声词这类小批次的合法申报，交由护栏 1/2
+    # 逐条人工裁定把关。仅当批内样本 ≥ 下限且申报率 > 阈值，才整批降级为普通译文并重译。
+    # DECISION(§5.4 护栏4 分母)：测的是"模型对已产出内容的偷懒比例"，返回行数即它声称完成
+    # 的工作量；用请求行数做分母时，模型少返回（缺行）反而稀释申报率，等于奖励少答；
+    # 缺行由 V1 单独处理，不重复惩罚。
     downgraded: list[int] = []
     alert: str | None = None
+    cumulative_alert: str | None = None
     kept_rows = [uid for uid in returned if uid in wanted]
-    if pending_keep and kept_rows and len(kept_rows) >= KEEP_DECLARE_RATE_MIN_ROWS:
-        rate = len(pending_keep) / len(kept_rows)
+    batch_rows = len(kept_rows)
+    batch_declared = len(pending_keep)
+    if pending_keep and batch_rows >= KEEP_DECLARE_MIN_BATCH:
+        rate = batch_declared / batch_rows
         if rate > keep_declare_rate_limit:
             downgraded = sorted(pending_keep)
             for uid, (text, _reason) in pending_keep.items():
                 results[uid] = text
             alert = (
-                f"AI 申报率 {rate:.0%}（{len(pending_keep)}/{len(kept_rows)}）"
+                f"AI 申报率 {rate:.0%}（{batch_declared}/{batch_rows}）"
                 f"超过阈值 {keep_declare_rate_limit:.0%}：本批申报全部降级为普通译文并重译"
             )
-            logger.warning("§5.4 护栏4 触发：%s", alert)
+            logger.warning("§5.4 护栏4 单批闸触发：%s", alert)
             pending_keep = {}
+
+    # 累计闸：把本批口径（行数/申报行数）逐次计入项目级计数器；累计样本达下限且
+    # 累计申报率越阈时，本批带上全局告警（不入 downgraded——已逐条进人工裁定），
+    # 并由 W3 据此进入降级模式。这样「每批都申报一大半、但每批都 <5 行」的系统性
+    # 滥用在单批口径下逃得掉，却在累计口径下被逮出。
+    if accumulator is not None:
+        accumulator.record(batch_rows, batch_declared)
+        cumulative_alert = accumulator.cumulative_alert_message()
+        if cumulative_alert:
+            logger.warning("§5.4 护栏4 累计闸触发：%s", cumulative_alert)
 
     # §5.4 护栏 1/2/3：逐条处置申报
     declared: list[int] = []
@@ -373,6 +461,7 @@ def parse_response(
         rejected=rejected,
         downgraded=downgraded,
         alert=alert,
+        cumulative_alert=cumulative_alert,
     )
 
 

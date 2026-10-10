@@ -21,6 +21,9 @@ from pytran.interfaces import (
 from pytran.protocol import (
     DEFAULT_SYSTEM_PROMPT,
     KEEP_DECLARE_HINT,
+    KEEP_DECLARE_CUM_MIN_ROWS,
+    KEEP_DECLARE_MIN_BATCH,
+    KeepDeclareAccumulator,
     MAX_CONTEXT_LINES,
     ParseResult,
     build_messages,
@@ -276,18 +279,21 @@ def test_guardrail_3_unknown_flag_variant_is_plain_text():
     assert out.declared == []
 
 
-def test_guardrail_4_batch_declare_rate_downgrades_all():
-    # 护栏 4：2/3 申报 > 15% → 全部申报降级为普通文本并告警
+def test_guardrail_4_no_downgrade_below_min_batch():
+    # 双闸·单批闸不触发：批内样本 < KEEP_DECLARE_MIN_BATCH（此处 3 行）时，
+    # 即使申报率 2/3 = 67% >> 15%，也不降级——单行/小批的合法申报（人名/拟声）
+    # 交给护栏 1/2 逐条进人工裁定。
+    assert KEEP_DECLARE_MIN_BATCH == 5
     raw = (
         '{"i": 1, "t": "Ian", "k": 1, "r": "人名"}\n'
         '{"i": 2, "t": "Hahhh...", "k": 1, "r": "拟声"}\n'
         '{"i": 3, "t": "你好", "k": false}'
     )
     out = parse_response(raw, [1, 2, 3], allow_keep_declare=True, sources=SOURCES)
-    assert out.results[1] == "Ian"
-    assert out.results[2] == "Hahhh..."
-    assert sorted(out.downgraded) == [1, 2]
-    assert out.alert and "申报率" in out.alert
+    assert out.downgraded == []
+    assert out.alert is None
+    assert isinstance(out.results.get(1), KeepDeclared)
+    assert isinstance(out.results.get(2), KeepDeclared)
 
 
 def test_guardrail_4_rate_limit_is_configurable():
@@ -299,9 +305,75 @@ def test_guardrail_4_rate_limit_is_configurable():
 
 
 def test_guardrail_4_low_rate_keeps_declaration():
+    # 批内样本 < 下限：申报率虽"高"（1/2 = 50%），但小批不降级，申报保留。
     raw = '{"i": 1, "t": "Ian", "k": 1}\n{"i": 3, "t": "你好", "k": false}'
     out = parse_response(raw, [1, 2, 3], allow_keep_declare=True, sources=SOURCES)
     assert isinstance(out.results.get(1), KeepDeclared)
+
+
+def test_guardrail_4_downgrade_when_min_batch_and_over_rate():
+    # 双闸·单批闸触发：批内样本 ≥ 5 且申报率 > 15% → 整批申报降级为普通译文并告警。
+    # 5 行里申报 2 行 = 40% > 15%，超过 KEEP_DECLARE_MIN_BATCH 下限。
+    raw = (
+        '{"i": 1, "t": "Ian", "k": 1, "r": "人名"}\n'
+        '{"i": 2, "t": "Hahhh...", "k": 1, "r": "拟声"}\n'
+        '{"i": 3, "t": "你好", "k": false}\n'
+        '{"i": 4, "t": "Bob", "k": 1, "r": "人名"}\n'
+        '{"i": 5, "t": "再见", "k": false}'
+    )
+    out = parse_response(raw, [1, 2, 3, 4, 5], allow_keep_declare=True, sources=SOURCES)
+    assert sorted(out.downgraded) == [1, 2, 4]
+    assert out.alert and "申报率" in out.alert
+    assert out.results[1] == "Ian"
+    assert out.results[4] == "Bob"
+
+
+def test_guardrail_4_accumulator_detects_systemic_abuse():
+    # 双闸·累计闸：每批都 <5 行、单批闸全放过，但"每批都申报一大半"→
+    # 累计样本达 KEEP_DECLARE_CUM_MIN_ROWS(20) 且累计率 >15% 时进入降级模式并告警。
+    acc = KeepDeclareAccumulator()
+    # 20 批，每批 1 行且全部申报（累计 20/20 = 100% > 15%）
+    for _ in range(KEEP_DECLARE_CUM_MIN_ROWS):
+        out = parse_response('{"i": 1, "t": "Ian", "k": 1, "r": "人名"}',
+                             [1], allow_keep_declare=True, sources=SOURCES,
+                             accumulator=acc)
+        assert out.downgraded == []           # 单批闸（1 行）不降级
+        assert isinstance(out.results.get(1), KeepDeclared)
+    assert acc.degrade_mode is True
+    # 首次越累计阈的一批 cumulative_alert 应非 None
+    early = parse_response('{"i": 1, "t": "Ian", "k": 1, "r": "人名"}',
+                           [1], allow_keep_declare=True, sources=SOURCES,
+                           accumulator=acc)
+    assert early.cumulative_alert is not None
+    assert "降级模式" in early.cumulative_alert
+
+
+def test_guardrail_4_accumulator_only_after_min_rows():
+    # 累计闸在样本达下限前不触发：19 行累计且全申报（19/19=100%）仍 < 20 行 → 未降级。
+    acc = KeepDeclareAccumulator()
+    for _ in range(KEEP_DECLARE_CUM_MIN_ROWS - 1):
+        parse_response('{"i": 1, "t": "Ian", "k": 1, "r": "人名"}',
+                       [1], allow_keep_declare=True, sources=SOURCES,
+                       accumulator=acc)
+    assert acc.degrade_mode is False
+    # 再补一行（恰达下限）全申报 → 越过阈，进入降级模式
+    parse_response('{"i": 1, "t": "Ian", "k": 1, "r": "人名"}',
+                   [1], allow_keep_declare=True, sources=SOURCES, accumulator=acc)
+    assert acc.degrade_mode is True
+
+
+def test_guardrail_4_accumulator_irreversible():
+    # 进入降级模式后不可逆：即便后续批次零申报，degrade_mode 保持 True。
+    acc = KeepDeclareAccumulator()
+    for _ in range(KEEP_DECLARE_CUM_MIN_ROWS):
+        parse_response('{"i": 1, "t": "Ian", "k": 1, "r": "人名"}',
+                       [1], allow_keep_declare=True, sources=SOURCES, accumulator=acc)
+    assert acc.degrade_mode is True
+    # 后续 10 批零申报
+    for _ in range(10):
+        parse_response('{"i": 3, "t": "你好", "k": false}',
+                       [3], allow_keep_declare=True, sources=SOURCES, accumulator=acc)
+    assert acc.degrade_mode is True
 
 
 def test_keep_declare_ignored_when_not_injected():
@@ -422,7 +494,9 @@ def test_provider_empty_batch_makes_no_call():
 
 
 def test_provider_retries_on_429_with_backoff():
-    provider, _, sleeps = _provider([RateLimitError("slow down"), '{"i": 1, "t": "你好"}'])
+    # 三次响应：两次 429 + 一次成功 → 退避 2.0s 后第 2 次、4.0s 后第 3 次
+    provider, _, sleeps = _provider([RateLimitError("slow down"), RateLimitError("slow down"),
+                                     '{"i": 1, "t": "你好"}'])
     out = provider.translate_batch([(1, "Hello")], TermProfile())
     assert out == {1: "你好"}
     assert sleeps == [2.0, 4.0]
