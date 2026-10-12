@@ -34,6 +34,26 @@ def work_dir(tmp_path: Path) -> Path:
     return tmp_path
 
 
+@pytest.fixture
+def profile() -> "TermProfile":
+    """空术语表（无豁免）。"""
+    from pytran.config import TermProfile
+
+    return TermProfile()
+
+
+@pytest.fixture
+def profile_with_exempt() -> "TermProfile":
+    """含豁免表的术语表：整行原文命中豁免 → detector 判 PASS。
+
+    DECISION(§5.1)：豁免按整词 token 匹配（非短语），故用单 token「Menu」演示
+    「译文==原文 且整词命中豁免 → PASS」。
+    """
+    from pytran.config import TermProfile
+
+    return TermProfile(exempt_english=["Menu"])
+
+
 # ---------------------------------------------------------------------------
 # Windows 沙箱兼容：禁用 pytest 的 0o700 临时目录权限加固。
 # TODO(W5): 本补丁因 .pytest_tmp/pip 残留触发（根因已由总控清理 2026-10-09）。
