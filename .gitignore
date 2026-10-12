@@ -45,3 +45,6 @@ dist/
 # ---- IDE ----
 .idea/
 .vscode/
+
+# ---- W4b 真实解码验证（运行时在 workspace 内构建的忠实游戏副本，不入库） ----
+.w4b_real_game/

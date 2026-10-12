@@ -1,7 +1,7 @@
 # ADR-0008：unrpyc 集成采用「薄封装 + drop-in 真实上游」策略
 
 - 日期：2026-10-09
-- 状态：临时策略（总控 2026-10-09 审核：合成样本仅覆盖调用链, 真实游戏反编译为零覆盖；已立 W4b 强制内置真实 unrpyc, 本 ADR 于 W4b 交付后复审）
+- 状态：已接受（W4b 已落地真实上游 drop-in：vendor/unrpyc_real/ 已 vendored 上游 commit 44febb0，并经子进程桥在真实 Ren'Py 引擎上完成真实 .rpyc 全链路解码验证）
 - 影响范围：W4 `vendor/unrpyc.py`、`pytran/unren.py` 反编译入口（§8.1 ②、§8.2）
 
 ## 背景
