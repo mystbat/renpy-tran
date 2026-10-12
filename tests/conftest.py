@@ -36,6 +36,8 @@ def work_dir(tmp_path: Path) -> Path:
 
 # ---------------------------------------------------------------------------
 # Windows 沙箱兼容：禁用 pytest 的 0o700 临时目录权限加固。
+# TODO(W5): 本补丁因 .pytest_tmp/pip 残留触发（根因已由总控清理 2026-10-09）。
+# W5 打包阶段应移除本补丁, 恢复 pytest 默认行为并验证。
 #
 # 在 Windows 上，os.mkdir(path, 0o700) 会以一个显式 DACL 替换「继承的 ACL」，
 # 从而剥除沙箱受限令牌所依赖的 allow-ACE，导致测试进程随后无法 scandir/rmdir
