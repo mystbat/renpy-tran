@@ -138,6 +138,19 @@ class UnrenImpl(Unren):
                     return p
         return None
 
+    def detect_sdk_root(self, root: Path) -> Optional[Path]:
+        """Locate the Ren'Py engine dir (the dir containing ``renpy/``).
+
+        A real packaged game carries its own ``renpy/`` at the game root, so the
+        game root itself is the SDK root. This is also the directory that must be
+        on ``sys.path`` for the upstream unrpyc to ``import renpy``. Returns the
+        directory containing ``renpy/``, or ``None`` if not found. (§8.5)
+        """
+        root = Path(root)
+        if (root / "renpy").is_dir():
+            return root
+        return None
+
     # -- 解包 / 反编译 -------------------------------------------------------
 
     def extract_rpa(self, game_root: Path, remove_rpa: bool = False) -> List[Path]:
@@ -165,19 +178,45 @@ class UnrenImpl(Unren):
                     logger.warning("无法删除 RPA %s: %s", rpa, exc)
         return extracted
 
-    def decompile(self, game_root: Path, try_harder: bool = False) -> List[Path]:
+    def decompile(
+        self,
+        game_root: Path,
+        try_harder: bool = False,
+        python_exe: Optional[Path] = None,
+        sdk_root: Optional[Path] = None,
+    ) -> List[Path]:
         game_root = Path(game_root)
         if not self.is_renpy_game(game_root):
             raise GameError(f"不是 Ren'Py 游戏目录：{game_root}")
         from vendor import unrpyc
 
-        rpyc_files = sorted(game_root.glob("game/**/*.rpyc")) + sorted(
-            game_root.glob("game/*.rpyc")
-        )
+        # `game/**/*.rpyc` already matches `game/*.rpyc`; dedupe so each file
+        # is decoded exactly once.
+        rpyc_files = sorted({*game_root.glob("game/**/*.rpyc")})
         if not rpyc_files:
             return []
-        logger.info("反编译 %d 个 rpyc（try_harder=%s）", len(rpyc_files), try_harder)
-        return unrpyc.decompile_files(rpyc_files, out_dir=None, try_harder=try_harder)
+        # Real upstream unrpyc runs in a subprocess to a real Ren'Py interpreter
+        # (it imports renpy at load time; see vendor/unrpyc.py + ADR-0008 §8.5).
+        # Default to the game's own bundled python and engine dir; both args are
+        # additive overrides (used by tests / explicit callers).
+        if python_exe is None:
+            python_exe = self.detect_game_python(game_root)
+        if sdk_root is None:
+            sdk_root = self.detect_sdk_root(game_root)
+        logger.info(
+            "反编译 %d 个 rpyc（try_harder=%s, python=%s, sdk_root=%s）",
+            len(rpyc_files),
+            try_harder,
+            python_exe,
+            sdk_root,
+        )
+        return unrpyc.decompile_files(
+            rpyc_files,
+            out_dir=None,
+            try_harder=try_harder,
+            python_exe=python_exe,
+            sdk_root=sdk_root,
+        )
 
     # -- 骨架生成 -----------------------------------------------------------
 
