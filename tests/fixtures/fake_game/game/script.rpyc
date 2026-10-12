@@ -1,0 +1,7 @@
+# 手写合成 rpyc（fake_unrpyc 通过标记恢复源码）
+# src_begin
+# 合成游戏脚本（用于反编译/写回测试）
+translate chinese start_1:
+    "Hello, world."
+    "This is a fake Ren'Py game for pytran testing."
+# src_end
