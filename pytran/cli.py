@@ -2,9 +2,12 @@
 
 子命令：
 * ``translate <文件...>`` —— 纯文件模式（M1）：解析 rpy → 翻译 → 写 output/。
-* ``game <游戏目录> [--all]`` —— 游戏目录一键流程（M3，§8.3）。
+* ``game <游戏目录> [--level 0|1|2] [--yes] [--budget-max N]`` —— 游戏目录一键流程（M3，§8.3）。
 * ``auto <游戏目录> [--level 0|1|2] [--yes] [--budget-max N]`` —— 全流程自动化（§15）。
 * ``auto-batch <父目录>`` —— 批处理（§15.4）。
+* ``migrate <旧2.0目录>`` —— 2.0 旧工程迁移导入（§10，W6）。
+* ``export-csv`` / ``import-csv`` —— 工程与 CSV 表格互转（§6.4 人工通道）。
+* ``ui`` —— 启动图形审校界面（§9）。
 
 自动化分级（§15.1）：
 * L2 全自动**必须显式 ``--yes``**，否则启动被拒（§14：写回破坏游戏目录的防守）；
@@ -26,9 +29,10 @@ from typing import Optional
 
 from pytran.config import Config, TermProfile
 from pytran.interfaces import Project, Provider, WriteJournal
-from pytran.models import GameFile, Segment
+from pytran.models import GameFile, Segment, SegmentStatus
 from pytran.parser import RenpyParser
 from pytran.project import JsonProjectStore, build_project
+from pytran.migrate import ProjectMigrator
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +238,91 @@ def cmd_auto_batch(
 
 
 # --------------------------------------------------------------------------- #
+# 2.0 旧工程迁移导入（W6，设计 §10）
+# --------------------------------------------------------------------------- #
+def cmd_migrate(
+    old_dir: Path,
+    *,
+    work_dir: Path,
+) -> int:
+    """把 2.0 旧翻译产物（含 rpybak/ 与 split_csv/bak/）迁移进 3.0 工程。
+
+    按「块序 + 行序」对齐回填（§10），未对上的可译行置 FAILED 并带原因。
+    匹配率低于 95% 时 ``ProjectMigrator`` 已自动拦下并抛 ``ExportBlocked``。
+    """
+    old_dir = Path(old_dir)
+    work_dir = Path(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    if not old_dir.is_dir():
+        logger.error("migrate：旧 2.0 目录不存在：%s", old_dir)
+        return 2
+    project = ProjectMigrator().migrate(old_dir, work_dir)
+    translated = sum(1 for s in project.segments if s.status == SegmentStatus.TRANSLATED)
+    pending = sum(1 for s in project.segments if s.status == SegmentStatus.PENDING)
+    failed = sum(1 for s in project.segments if s.status == SegmentStatus.FAILED)
+    logger.info(
+        "migrate 完成：%d 段 → 已译 %d / 待译 %d / 未匹配 %d（%s）",
+        len(project.segments), translated, pending, failed, work_dir / "project.json",
+    )
+    if failed:
+        logger.warning("存在 %d 个未匹配行（FAILED），请人工核对后补译", failed)
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# 人工通道（CSV 往返 / 图形审校，§6.4 / §6.5 / §9）
+# --------------------------------------------------------------------------- #
+def cmd_export_csv(work_dir: Path) -> int:
+    """把当前工程导出为 CSV 表格（§6.4），供人工逐条修改。"""
+    work_dir = Path(work_dir)
+    deps = build_deps(work_dir)
+    project = deps.store.load(work_dir)
+    if not project.segments:
+        logger.error("export-csv：工程为空（未找到 %s）", work_dir / "project.json")
+        return 1
+    path = deps.exporter.export_csv(project, work_dir)
+    logger.info("export-csv 完成：%d 行 → %s", len(project.segments), path)
+    return 0
+
+
+def cmd_import_csv(csv_path: Path, *, work_dir: Path) -> int:
+    """把人工修改过的 CSV 按 uid 主键回灌（§6.4 / §6.2 兜底），并落盘工程。"""
+    csv_path = Path(csv_path)
+    work_dir = Path(work_dir)
+    if not csv_path.is_file():
+        logger.error("import-csv：CSV 文件不存在：%s", csv_path)
+        return 2
+    deps = build_deps(work_dir)
+    project = deps.store.load(work_dir)
+    if not project.segments:
+        logger.error("import-csv：工程为空（未找到 %s）", work_dir / "project.json")
+        return 1
+    profile = TermProfile.load(work_dir / deps.config.profile_path)
+    updated, unmatched = deps.exporter.import_csv(project, csv_path, profile)
+    deps.store.save(project, work_dir)
+    logger.info("import-csv 完成：更新 %d 行 / 未匹配 %d 行（已保存工程）",
+                updated, len(unmatched))
+    if unmatched:
+        logger.warning("存在 %d 个未匹配行（uid 缺失），已跳过", len(unmatched))
+    return 0
+
+
+def cmd_ui(work_dir: Path) -> int:
+    """启动图形审校界面（§9）。"""
+    work_dir = Path(work_dir)
+    deps = build_deps(work_dir)
+    project = deps.store.load(work_dir)
+    if not project.segments:
+        logger.error("ui：工程为空（未找到 %s），请先 translate / game / migrate",
+                     work_dir / "project.json")
+        return 1
+    from pytran.ui import PytranApp
+
+    PytranApp(project, deps=deps, work_dir=work_dir).run()
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # 生产依赖组装 + argparse 入口
 # --------------------------------------------------------------------------- #
 def build_deps(work_dir: Path, *, provider: Optional[Provider] = None) -> CliDeps:
@@ -293,6 +382,24 @@ def _build_parser() -> argparse.ArgumentParser:
     b.add_argument("--yes", action="store_true")
     b.add_argument("--budget-max", type=int, default=None)
     b.set_defaults(func=_dispatch_batch)
+
+    m = sub.add_parser("migrate", help="2.0 旧工程迁移导入（§10）")
+    m.add_argument("old_dir", help="2.0 产物目录（含 rpybak/ 与 split_csv/bak/）")
+    m.add_argument("--work-dir", default=".", help="3.0 工程输出目录（默认当前）")
+    m.set_defaults(func=_dispatch_migrate)
+
+    e = sub.add_parser("export-csv", help="导出工程为 CSV 表格（§6.4）")
+    e.add_argument("--work-dir", default=".", help="工程目录（默认当前）")
+    e.set_defaults(func=_dispatch_export_csv)
+
+    i = sub.add_parser("import-csv", help="把人工修改的 CSV 回灌工程（§6.4）")
+    i.add_argument("csv_path", help="CSV 文件路径")
+    i.add_argument("--work-dir", default=".", help="工程目录（默认当前）")
+    i.set_defaults(func=_dispatch_import_csv)
+
+    u = sub.add_parser("ui", help="启动图形审校界面（§9）")
+    u.add_argument("--work-dir", default=".", help="工程目录（默认当前）")
+    u.set_defaults(func=_dispatch_ui)
     return p
 
 
@@ -319,6 +426,22 @@ def _dispatch_batch(args, provider=None) -> int:
         Path(args.parent_dir), deps=deps, level=args.level, yes=args.yes,
         budget_max=args.budget_max,
     )
+
+
+def _dispatch_migrate(args, provider=None) -> int:
+    return cmd_migrate(Path(args.old_dir), work_dir=Path(args.work_dir))
+
+
+def _dispatch_export_csv(args, provider=None) -> int:
+    return cmd_export_csv(Path(args.work_dir))
+
+
+def _dispatch_import_csv(args, provider=None) -> int:
+    return cmd_import_csv(Path(args.csv_path), work_dir=Path(args.work_dir))
+
+
+def _dispatch_ui(args, provider=None) -> int:
+    return cmd_ui(Path(args.work_dir))
 
 
 def main(argv: Optional[list[str]] = None) -> int:

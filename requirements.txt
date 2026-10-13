@@ -1,0 +1,4 @@
+# py-tran 运行时依赖（Python >= 3.10）
+# 安装：pip install -r requirements.txt
+
+openai>=1.30
