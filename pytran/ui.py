@@ -112,6 +112,14 @@ class PytranApp:
         if not app:
             app = QApplication(sys.argv)
             
+        app.setStyleSheet("""
+            QPushButton {
+                padding: 6px 16px;
+                font-size: 14px;
+                min-height: 28px;
+            }
+        """)
+            
         window = QMainWindow()
         window.setWindowTitle("pytran 3.0 — Ren'Py AI 汉化工具")
         window.resize(1100, 700)
@@ -302,8 +310,20 @@ class PytranApp:
         if game_dir:
             self.project.game_root = game_dir
             self.state.goto(1)
+            self._refresh_tools()  # 解包/写回按钮的置灰依赖 game_root，选完立即刷新
+            # 给用户一个状态判断：有 rpy 直接导入；只有 rpa/rpyc 需要先解包
+            game = Path(game_dir) / "game"
+            n_rpy = len(list(game.glob("**/*.rpy"))) if game.is_dir() else 0
+            n_rpa = len(list(game.glob("*.rpa"))) if game.is_dir() else 0
+            n_rpyc = len(list(game.glob("**/*.rpyc"))) if game.is_dir() else 0
             self._log(f"已选择游戏目录：{game_dir}")
-            self._log("点「导入」扫描 game/tl 下的 rpy 文件")
+            if n_rpy:
+                self._log(f"发现 {n_rpy} 个 .rpy → 点「导入」直接解析")
+            elif n_rpa or n_rpyc:
+                self._log(f"发现 {n_rpa} 个 RPA / {n_rpyc} 个 rpyc（未解包状态）"
+                          "→ 点「解包+反编译」后再导入")
+            else:
+                self._log("game 目录为空或不存在，请确认选的是游戏根目录")
             return
             
         rpy, _ = QFileDialog.getOpenFileName(
@@ -335,7 +355,16 @@ class PytranApp:
                 segs.extend(parser.parse_file(rpy, game_relpath=rel))
                 files.append((rel, rpy))
             if not segs:
-                self._log(f"在 {pattern} 未找到 .rpy 文件；可先用「解包+反编译」生成，或配置 Ren'Py SDK 生成骨架")
+                game = Path(game_root) / "game"
+                n_rpa = len(list(game.glob("*.rpa"))) if game.is_dir() else 0
+                n_rpyc = len(list(game.glob("**/*.rpyc"))) if game.is_dir() else 0
+                if n_rpa or n_rpyc:
+                    self._log("未找到 .rpy，但发现未解包的 RPA/rpyc "
+                              f"（{n_rpa} RPA / {n_rpyc} rpyc）"
+                              "→ 请先点「解包+反编译」，完成后再回来「导入」")
+                else:
+                    self._log(f"在 {pattern} 未找到任何 .rpy / .rpyc / .rpa；"
+                              "请确认这是游戏根目录，或用 Ren'Py SDK 生成翻译骨架")
                 return
         elif getattr(self, "_pending_rpy", None):
             rpy = Path(self._pending_rpy)
@@ -391,11 +420,16 @@ class PytranApp:
         if self.deps is None:
             self.deps = self._build_default_deps()
         try:
-            self.deps.unren.extract_rpa(self.project.game_root)
-            self.deps.unren.decompile(self.project.game_root)
-            self._log("解包与反编译完成")
+            self._log("解包 RPA 中……（大包可能需要一些时间）")
+            extracted = self.deps.unren.extract_rpa(self.project.game_root)
+            self._log(f"解包完成：{len(extracted)} 个文件")
+            self._log("反编译 rpyc 中……")
+            decompiled = self.deps.unren.decompile(self.project.game_root)
+            self._log(f"反编译完成：{len(decompiled)} 个 .rpy 生成")
+            self._log("点「导入」继续（解析刚生成的 rpy）")
+            self.state.goto(1)
         except Exception as exc:
-            self._log(f"解包失败：{exc}")
+            self._log(f"解包/反编译失败：{exc}", level="warn")
 
     def _on_writeback(self) -> None:
         if self.deps is None:
