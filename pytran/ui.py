@@ -634,8 +634,9 @@ class PytranApp:
         lbl.setText(text)
 
     def _refresh_steps(self) -> None:
-        for i, b in enumerate(self._widgets.get("steps", [])):
-            b.setEnabled(i <= self.state.current_step)
+        # 所有选项卡均可自由点击切换（选项卡自由导航模式）
+        for b in self._widgets.get("steps", []):
+            b.setEnabled(True)
         
         stack = self._widgets.get("stack")
         if stack:
