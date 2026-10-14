@@ -163,42 +163,80 @@ class PytranApp:
         self._widgets["dir_label"].setWordWrap(True)
         main_layout.addWidget(self._widgets["dir_label"])
         
-        # Progress
+        # Stacked Widget for pages (Wizard-like)
+        self._widgets["stack"] = QStackedWidget()
+        main_layout.addWidget(self._widgets["stack"], stretch=1)
+        
+        # --- Page 0: Choose Directory ---
+        page_choose = QWidget()
+        choose_layout = QVBoxLayout(page_choose)
+        choose_layout.addWidget(QLabel("第一步：选择需要汉化的游戏目录，或单个 .rpy 脚本文件。"))
+        
+        choose_btns = QHBoxLayout()
+        self._widgets["btn_choose_dir"] = QPushButton("选择游戏目录（推荐）")
+        self._widgets["btn_choose_dir"].clicked.connect(self._choose_directory)
+        choose_btns.addWidget(self._widgets["btn_choose_dir"])
+        
+        self._widgets["btn_choose_file"] = QPushButton("选择单个 .rpy 文件")
+        self._widgets["btn_choose_file"].clicked.connect(self._choose_file)
+        choose_btns.addWidget(self._widgets["btn_choose_file"])
+        choose_layout.addLayout(choose_btns)
+        
+        self._widgets["btn_unpack"] = QPushButton("解包+反编译 (如果是未解包的 rpa/rpyc 游戏，点击此项)")
+        self._widgets["btn_unpack"].clicked.connect(self._on_unpack)
+        choose_layout.addWidget(self._widgets["btn_unpack"])
+        choose_layout.addStretch()
+        self._widgets["stack"].addWidget(page_choose)
+        
+        # --- Page 1: Import ---
+        page_import = QWidget()
+        import_layout = QVBoxLayout(page_import)
+        import_layout.addWidget(QLabel("第二步：扫描并解析目录下的脚本文件。"))
+        self._widgets["btn_import"] = QPushButton("开始解析/导入")
+        self._widgets["btn_import"].clicked.connect(self._import_rpy)
+        import_layout.addWidget(self._widgets["btn_import"])
+        import_layout.addStretch()
+        self._widgets["stack"].addWidget(page_import)
+        
+        # --- Page 2: Translate ---
+        page_translate = QWidget()
+        translate_layout = QVBoxLayout(page_translate)
+        translate_layout.addWidget(QLabel("第三步：自动汉化进程。"))
+        
         progress_layout = QVBoxLayout()
         self._widgets["progress"] = QProgressBar()
         self._widgets["progress"].setRange(0, 100)
         progress_layout.addWidget(self._widgets["progress"])
         self._widgets["progress_label"] = QLabel("准备就绪")
         progress_layout.addWidget(self._widgets["progress_label"])
-        main_layout.addLayout(progress_layout)
+        translate_layout.addLayout(progress_layout)
         
-        # Stacked Widget for pages (Wizard-like)
-        self._widgets["stack"] = QStackedWidget()
-        main_layout.addWidget(self._widgets["stack"], stretch=1)
+        translate_btns = QHBoxLayout()
+        self._widgets["btn_translate"] = QPushButton("开始自动翻译")
+        self._widgets["btn_translate"].clicked.connect(self._start_translate)
+        translate_btns.addWidget(self._widgets["btn_translate"])
         
-        # Page 0: Choose / Import / Translation Progress (Basic view)
-        page_basic = QWidget()
-        basic_layout = QVBoxLayout(page_basic)
-        basic_layout.addWidget(QLabel("按照顶部步骤进行操作。"))
-        self._widgets["stack"].addWidget(page_basic)
+        self._widgets["btn_retry"] = QPushButton("重试失败项")
+        self._widgets["btn_retry"].clicked.connect(self._start_translate)
+        translate_btns.addWidget(self._widgets["btn_retry"])
+        translate_layout.addLayout(translate_btns)
+        translate_layout.addStretch()
+        self._widgets["stack"].addWidget(page_translate)
         
-        # Page 3: Review
+        # --- Page 3: Review ---
         page_review = QWidget()
         review_layout = QVBoxLayout(page_review)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         
-        # List
         self._widgets["listbox"] = QListWidget()
         self._widgets["listbox"].currentRowChanged.connect(self._on_list_select)
         splitter.addWidget(self._widgets["listbox"])
         
-        # Editor
         self._widgets["editor"] = QTextEdit()
         splitter.addWidget(self._widgets["editor"])
         splitter.setSizes([300, 800])
         review_layout.addWidget(splitter, stretch=1)
         
-        # Review buttons
         review_btns = QHBoxLayout()
         btn_accept = QPushButton("a 通过(Ctrl+S)")
         btn_accept.clicked.connect(self._on_accept)
@@ -210,16 +248,24 @@ class PytranApp:
         
         self._widgets["stack"].addWidget(page_review)
         
-        # Tools
-        tools_layout = QHBoxLayout()
-        self._widgets["unpack"] = QPushButton("解包+反编译")
-        self._widgets["unpack"].clicked.connect(self._on_unpack)
-        tools_layout.addWidget(self._widgets["unpack"])
+        # --- Page 4: Export/Writeback ---
+        page_export = QWidget()
+        export_layout = QVBoxLayout(page_export)
+        export_layout.addWidget(QLabel("第四步：写回游戏目录，或导出为 CSV 以供外部校对。"))
         
-        self._widgets["writeback"] = QPushButton("写回游戏")
-        self._widgets["writeback"].clicked.connect(self._on_writeback)
-        tools_layout.addWidget(self._widgets["writeback"])
-        main_layout.addLayout(tools_layout)
+        self._widgets["btn_export_csv"] = QPushButton("导出 CSV (人工外部审校)")
+        self._widgets["btn_export_csv"].clicked.connect(self._on_export_csv)
+        export_layout.addWidget(self._widgets["btn_export_csv"])
+        
+        self._widgets["btn_import_csv"] = QPushButton("从 CSV 导入")
+        self._widgets["btn_import_csv"].clicked.connect(self._on_import_csv)
+        export_layout.addWidget(self._widgets["btn_import_csv"])
+        
+        self._widgets["btn_writeback"] = QPushButton("事务化写回游戏目录")
+        self._widgets["btn_writeback"].clicked.connect(self._on_writeback)
+        export_layout.addWidget(self._widgets["btn_writeback"])
+        export_layout.addStretch()
+        self._widgets["stack"].addWidget(page_export)
         
         # Log
         self._widgets["log"] = QTextEdit()
@@ -319,21 +365,10 @@ class PytranApp:
         dlg.exec()
 
     def _on_step(self, idx: int) -> None:
-        if idx == 0:
-            self._choose_directory()
-        elif idx == 1:
-            self._import_rpy()
-        elif idx == 2:
-            self._start_translate()
-        elif idx == 3:
-            self.state.goto(3)
-            self._refresh_all()
-        elif idx == 4:
-            self._on_writeback()
-            return
-        self._refresh_dir_label()
-        self._refresh_steps()
-        
+        stack = self._widgets.get("stack")
+        if stack:
+            stack.setCurrentIndex(idx)
+            
     def _choose_directory(self) -> None:
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
         
@@ -458,6 +493,22 @@ class PytranApp:
         self._refresh_review()
         self._navigate_list(1)
 
+    def _decompile_interpreters(self) -> "tuple[Path | None, Path | None]":
+        """反编译用解释器：config.renpy_sdk_dir 的 SDK python 优先（更新版本、
+        对新旧 rpyc 兼容性更好），回退游戏自带 python。返回 (python_exe, sdk_root)。"""
+        from pytran.cli import build_deps
+        cfg = (self.deps.config if self.deps is not None
+               else build_deps(self.work_dir, allow_missing_provider=True).config)
+        sdk_dir = cfg.sdk_dir()
+        if sdk_dir is None:
+            return None, None
+        for sub in ("lib/py3-windows-x86_64/python.exe",
+                    "lib/py2-windows-x86_64/python.exe"):
+            exe = sdk_dir / sub
+            if exe.exists():
+                return exe, sdk_dir
+        return None, sdk_dir
+
     def _on_unpack(self) -> None:
         if self.deps is None:
             self.deps = self._build_default_deps()
@@ -473,8 +524,12 @@ class PytranApp:
                 extracted = self.deps.unren.extract_rpa(
                     self.project.game_root, progress=on_progress)
                 self.on_event("log", {"message": f"解包完成：{len(extracted)} 个文件"})
+                py_exe, sdk_root = self._decompile_interpreters()
+                if py_exe is not None:
+                    self.on_event("log", {"message": f"使用 SDK 解释器：{py_exe}"})
                 self.on_event("log", {"message": "反编译 rpyc 中……"})
-                decompiled = self.deps.unren.decompile(self.project.game_root)
+                decompiled = self.deps.unren.decompile(
+                    self.project.game_root, python_exe=py_exe, sdk_root=sdk_root)
                 self.on_event("log",
                               {"message": f"反编译完成：{len(decompiled)} 个 .rpy 生成"})
                 self.on_event("log",
