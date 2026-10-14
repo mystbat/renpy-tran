@@ -11,8 +11,9 @@ cd /d "%~dp0"
 
 REM ---- 0. Launch GUI (settings incl. API key live inside the UI) ----
 
-REM ---- 1. Locate embedded Python ----
+REM ---- 1. Locate Python: prefer .venv (all deps incl. PyQt6), then embedded, then PATH ----
 set "PY=python"
+if exist ".venv\Scripts\python.exe" set "PY=.venv\Scripts\python.exe"
 if exist "python-3.13.x-embed-amd64\python.exe" set "PY=python-3.13.x-embed-amd64\python.exe"
 if exist "python-3.13.5-embed-amd64\python.exe" set "PY=python-3.13.5-embed-amd64\python.exe"
 if exist "python\python.exe" set "PY=python\python.exe"
