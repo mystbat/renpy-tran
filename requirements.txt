@@ -2,3 +2,5 @@
 # 安装：pip install -r requirements.txt
 
 openai>=1.30
+PyQt6>=6.0.0
+
