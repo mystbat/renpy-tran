@@ -368,6 +368,14 @@ class PytranApp:
         stack = self._widgets.get("stack")
         if stack:
             stack.setCurrentIndex(idx)
+        self._highlight_active_step(idx)
+
+    def _highlight_active_step(self, active_idx: int) -> None:
+        for i, b in enumerate(self._widgets.get("steps", [])):
+            if i == active_idx:
+                b.setStyleSheet("font-weight: bold; background-color: #2a7ae2; color: white;")
+            else:
+                b.setStyleSheet("")
             
     def _on_export_csv(self) -> None:
         """导出工程为 CSV 供人工编辑（§6.4）。"""
@@ -631,10 +639,10 @@ class PytranApp:
         
         stack = self._widgets.get("stack")
         if stack:
-            if self.state.current_step == 3:
-                stack.setCurrentIndex(1)
-            else:
-                stack.setCurrentIndex(0)
+            # 自动将视图切换到当前阶段页面，并高亮该选项卡
+            target_page = min(self.state.current_step, stack.count() - 1)
+            stack.setCurrentIndex(target_page)
+            self._highlight_active_step(target_page)
 
     def _refresh_progress(self) -> None:
         p = self.state.progress()
@@ -689,10 +697,16 @@ class PytranApp:
 
     def _refresh_tools(self) -> None:
         ctrl = self.state.all_controls()
-        if "unpack" in self._widgets:
-            self._widgets["unpack"].setEnabled(ctrl["tools_unpack"])
-        if "writeback" in self._widgets:
-            self._widgets["writeback"].setEnabled(ctrl["tools_writeback"])
+        if "btn_unpack" in self._widgets:
+            self._widgets["btn_unpack"].setEnabled(ctrl["tools_unpack"])
+        if "btn_writeback" in self._widgets:
+            self._widgets["btn_writeback"].setEnabled(ctrl["tools_writeback"])
+        if "btn_translate" in self._widgets:
+            self._widgets["btn_translate"].setEnabled(ctrl["translate"])
+        if "btn_retry" in self._widgets:
+            self._widgets["btn_retry"].setEnabled(ctrl["retry_failed"])
+        if "btn_export_csv" in self._widgets:
+            self._widgets["btn_export_csv"].setEnabled(ctrl["export_writeback"])
 
     def _log(self, message: str, level: str = "info") -> None:
         box = self._widgets.get("log")
