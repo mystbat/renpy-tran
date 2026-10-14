@@ -145,6 +145,12 @@ class PytranApp:
         step_layout.addWidget(btn_settings)
         main_layout.addLayout(step_layout)
         
+        # Directory Label
+        self._widgets["dir_label"] = QLabel()
+        self._widgets["dir_label"].setStyleSheet("color: #444; font-size: 13px; font-weight: bold; padding: 4px 0px;")
+        self._widgets["dir_label"].setWordWrap(True)
+        main_layout.addWidget(self._widgets["dir_label"])
+        
         # Progress
         progress_layout = QVBoxLayout()
         self._widgets["progress"] = QProgressBar()
@@ -299,13 +305,21 @@ class PytranApp:
         elif idx == 4:
             self._on_writeback()
             return
+        self._refresh_dir_label()
         self._refresh_steps()
         
     def _choose_directory(self) -> None:
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
         
+        # 决定文件对话框的初始目录：若已有游戏目录或文件，则从那里开始
+        initial_dir = str(self.work_dir)
+        if self.project.game_root and Path(self.project.game_root).exists():
+            initial_dir = self.project.game_root
+        elif getattr(self, "_pending_rpy", None) and Path(self._pending_rpy).parent.exists():
+            initial_dir = str(Path(self._pending_rpy).parent)
+        
         game_dir = QFileDialog.getExistingDirectory(
-            self._window, "选择 Ren'Py 游戏根目录（含 game/ 的目录）", str(self.work_dir))
+            self._window, "选择 Ren'Py 游戏根目录（含 game/ 的目录）", initial_dir)
             
         if game_dir:
             self.project.game_root = game_dir
@@ -324,10 +338,11 @@ class PytranApp:
                           "→ 点「解包+反编译」后再导入")
             else:
                 self._log("game 目录为空或不存在，请确认选的是游戏根目录")
+            self._refresh_dir_label()
             return
             
         rpy, _ = QFileDialog.getOpenFileName(
-            self._window, "或选择单个 .rpy 文件（纯文件模式）", str(self.work_dir), "Ren'Py 脚本 (*.rpy);;所有文件 (*.*)")
+            self._window, "或选择单个 .rpy 文件（纯文件模式）", initial_dir, "Ren'Py 脚本 (*.rpy);;所有文件 (*.*)")
             
         if rpy:
             self._pending_rpy = rpy
@@ -442,10 +457,21 @@ class PytranApp:
             self._log(f"写回失败：{exc}")
 
     def _refresh_all(self) -> None:
+        self._refresh_dir_label()
         self._refresh_steps()
         self._refresh_progress()
         self._refresh_review()
         self._refresh_tools()
+
+    def _refresh_dir_label(self) -> None:
+        lbl = self._widgets.get("dir_label")
+        if not lbl: return
+        text = f"当前工作区: {self.work_dir.absolute()}"
+        if self.project.game_root:
+            text += f"   |   游戏目录: {self.project.game_root}"
+        elif getattr(self, "_pending_rpy", None):
+            text += f"   |   选定文件: {self._pending_rpy}"
+        lbl.setText(text)
 
     def _refresh_steps(self) -> None:
         for i, b in enumerate(self._widgets.get("steps", [])):
