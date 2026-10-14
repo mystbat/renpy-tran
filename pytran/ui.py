@@ -138,6 +138,27 @@ class PytranApp:
         from pytran.cli import build_deps
         return build_deps(self.work_dir)
 
+    def _apply_terms(self, terms_map: dict, exempt_add: list[str]) -> None:
+        """把编辑后的术语/豁免写回 profile.json（ADR-0004 无 Key 涉及）。"""
+        from pytran.terms import rows_to_terms
+        profile = self._load_profile()
+        merged = rows_to_terms([(k, v) for k, v in terms_map.items()],
+                               profile.terms)
+        profile.terms = merged
+        for ex in exempt_add:
+            if ex not in profile.exempt_english:
+                profile.exempt_english.append(ex)
+        profile.save(self.work_dir / self.state.project.term_profile)
+
+    def _apply_rules(self, append: str) -> None:
+        """写入 prompt_overrides.system_append。"""
+        profile = self._load_profile()
+        if append:
+            profile.prompt_overrides["system_append"] = append
+        else:
+            profile.prompt_overrides.pop("system_append", None)
+        profile.save(self.work_dir / self.state.project.term_profile)
+
     def _load_profile(self) -> TermProfile:
         return TermProfile.load(self.work_dir / self.state.project.term_profile)
 
@@ -443,18 +464,26 @@ class PytranApp:
             lb.setCurrentRow(next_row)
 
     def _open_settings(self) -> None:
-        from PyQt6.QtWidgets import QDialog, QFormLayout, QLineEdit, QPushButton, QVBoxLayout, QMessageBox
-        
+        from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QPushButton,
+                                     QVBoxLayout, QMessageBox, QTabWidget, QWidget,
+                                     QTableWidget, QTableWidgetItem, QLabel,
+                                     QPlainTextEdit, QHBoxLayout, QHeaderView,
+                                     QAbstractItemView)
+        from PyQt6.QtCore import Qt
+
         dlg = QDialog(self._window)
         dlg.setWindowTitle("设置")
         dlg.setModal(True)
-        dlg.resize(500, 300)
-        
+        dlg.resize(640, 520)
+
         cfg = self._build_default_deps().config if self.deps is None else self.deps.config
-        
-        layout = QVBoxLayout(dlg)
-        form = QFormLayout()
-        
+        profile = self._load_profile()
+
+        tabs = QTabWidget(dlg)
+
+        # ---- Tab 1: 常规（五字段） ----
+        page_general = QWidget()
+        form = QFormLayout(page_general)
         fields = [
             ("API Key（存环境变量持久化请用系统设置）", "api_key", True),
             ("模型地址 (URL)", "api_url", False),
@@ -469,28 +498,115 @@ class PytranApp:
                 e.setEchoMode(QLineEdit.EchoMode.Password)
             form.addRow(label, e)
             entries[attr] = e
-            
-        layout.addLayout(form)
-        
-        def save() -> None:
+        tabs.addTab(page_general, "常规")
+
+        # ---- Tab 2: 术语表 ----
+        page_terms = QWidget()
+        v = QVBoxLayout(page_terms)
+        btns = QHBoxLayout()
+        btn_add = QPushButton("添加行")
+        btn_del = QPushButton("删除选中")
+        btn_extract = QPushButton("从工程抽取候选…")
+        btns.addWidget(btn_add); btns.addWidget(btn_del)
+        btns.addWidget(btn_extract); btns.addStretch(1)
+        v.addLayout(btns)
+
+        table = QTableWidget(0, 2)
+        table.setHorizontalHeaderLabels(["原文", "译名（留空=按原文保留）"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        for src in sorted(profile.terms):
+            row = table.rowCount()
+            table.insertRow(row)
+            table.setItem(row, 0, QTableWidgetItem(src))
+            table.setItem(row, 1, QTableWidgetItem(profile.terms[src]))
+        v.addWidget(table)
+
+        exempt_label = QLabel(
+            "免翻英文短语（每行一个；译名留空的英文条目保存时自动加入）：")
+        v.addWidget(exempt_label)
+        exempt_edit = QPlainTextEdit("\n".join(profile.exempt_english))
+        exempt_edit.setMaximumHeight(80)
+        v.addWidget(exempt_edit)
+
+        def add_row():
+            table.insertRow(table.rowCount())
+        def del_rows():
+            for it in reversed(sorted(table.selectedIndexes())):
+                table.removeRow(it.row())
+        def extract_candidates():
+            from pytran.terms import extract_candidates
+            cands = extract_candidates(self.project.segments, profile)
+            if not cands:
+                QMessageBox.information(dlg, "抽取", "未发现新的候选术语")
+                return
+            for c in cands:
+                row = table.rowCount()
+                table.insertRow(row)
+                it0 = QTableWidgetItem(c.source)
+                it0.setBackground(Qt.GlobalColor.lightGray)  # 候选待填
+                table.setItem(row, 0, it0)
+                table.setItem(row, 1, QTableWidgetItem(f"(出现 {c.count} 次)"))
+        btn_add.clicked.connect(add_row)
+        btn_del.clicked.connect(del_rows)
+        btn_extract.clicked.connect(extract_candidates)
+        tabs.addTab(page_terms, "术语表")
+
+        # ---- Tab 3: 翻译规则 ----
+        page_rules = QWidget()
+        rv = QVBoxLayout(page_rules)
+        hint = QLabel("追加在系统提示词末尾的自定义规则（风格/人名/格式要求）。\n"
+                      "不要修改输出格式规则（JSONL）——那由程序保证。下次翻译生效。")
+        hint.setWordWrap(True)
+        rv.addWidget(hint)
+        rules_edit = QPlainTextEdit(
+            profile.prompt_overrides.get("system_append", ""))
+        rv.addWidget(rules_edit)
+        tabs.addTab(page_rules, "翻译规则")
+
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(tabs)
+
+        def save():
             for attr, e in entries.items():
                 setattr(cfg, attr, e.text().strip())
             cfg.save(self.work_dir)
-            if cfg.api_key and (self.deps is None or self.deps.engine is None):
-                try:
-                    self.deps = self._build_default_deps()
-                    self._log("依赖已就绪：可以开始翻译")
-                except Exception as exc:
-                    self._log(f"依赖重建失败：{exc}")
-            QMessageBox.information(dlg, "设置", "已保存到 config.ini（API Key 不会写入文件，\n持久化请将其设为系统环境变量 TL_API_KEY）")
+
+            terms_map: dict[str, str] = {}
+            exempt_add: list[str] = []
+            for row in range(table.rowCount()):
+                it0, it1 = table.item(row, 0), table.item(row, 1)
+                if it0 is None:
+                    continue
+                src = it0.text().strip()
+                dst = (it1.text().strip() if it1 else "")
+                if not src:
+                    continue
+                if dst:
+                    terms_map[src] = dst
+                elif re.search(r"[A-Za-z]", src):
+                    exempt_add.append(src)
+            for ex in exempt_edit.toPlainText().splitlines():
+                ex = ex.strip()
+                if ex and ex not in exempt_add:
+                    exempt_add.append(ex)
+            self._apply_terms(terms_map, exempt_add)
+
+            append = rules_edit.toPlainText().strip()
+            self._apply_rules(append)
+
+            QMessageBox.information(
+                dlg, "设置",
+                "已保存到 config.ini / profile.json。\n"
+                "API Key 不会写入文件（持久化请设系统环境变量 TL_API_KEY）。\n"
+                "术语表与规则将在下次翻译时生效。")
             dlg.accept()
-            
+
         btn_save = QPushButton("保存")
         btn_save.clicked.connect(save)
         layout.addWidget(btn_save)
-        
-        dlg.exec()
 
+        dlg.exec()
     def _on_step(self, idx: int) -> None:
         stack = self._widgets.get("stack")
         if stack:
