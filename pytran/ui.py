@@ -369,6 +369,61 @@ class PytranApp:
         if stack:
             stack.setCurrentIndex(idx)
             
+    def _on_export_csv(self) -> None:
+        """导出工程为 CSV 供人工编辑（§6.4）。"""
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        try:
+            if self.deps is None:
+                self.deps = self._build_default_deps()
+            path, _ = QFileDialog.getSaveFileName(
+                self._window, "导出 CSV", str(self.work_dir / "translations.csv"),
+                "CSV (*.csv)")
+            if not path:
+                return
+            updated = self.deps.exporter.export_csv(self.project, Path(path))
+            self._log(f"已导出 CSV：{path}")
+            QMessageBox.information(self._window, "导出", f"已导出 {path}")
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"导出失败：{exc}", level="warn")
+            QMessageBox.warning(self._window, "导出失败", str(exc))
+
+    def _on_import_csv(self) -> None:
+        """回灌人工修改后的 CSV（§6.4，按 uid 匹配）。"""
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        try:
+            if self.deps is None:
+                self.deps = self._build_default_deps()
+            path, _ = QFileDialog.getOpenFileName(
+                self._window, "选择要回灌的 CSV", str(self.work_dir),
+                "CSV (*.csv);;所有文件 (*.*)")
+            if not path:
+                return
+            profile = self._load_profile()
+            updated, unmatched = self.deps.exporter.import_csv(
+                self.project, Path(path), profile)
+            self.deps.store.save(self.project, self.work_dir)
+            self._log(f"CSV 回灌完成：更新 {updated} 行，未匹配 {unmatched} 行")
+            self._refresh_review()
+            QMessageBox.information(
+                self._window, "导入",
+                f"更新 {updated} 行，未匹配 {unmatched} 行\n"
+                f"（未匹配行已跳过，详见日志）")
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"CSV 回灌失败：{exc}", level="warn")
+            QMessageBox.warning(self._window, "导入失败", str(exc))
+
+    def _choose_file(self) -> None:
+        """选择单个 .rpy 文件（纯文件模式），委托给目录选择的文件分支。"""
+        from PyQt6.QtWidgets import QFileDialog
+        rpy, _ = QFileDialog.getOpenFileName(
+            self._window, "选择单个 .rpy 文件（纯文件模式）",
+            str(self.work_dir), "Ren'Py 脚本 (*.rpy);;所有文件 (*.*)")
+        if rpy:
+            self._pending_rpy = rpy
+            self.state.goto(1)
+            self._log(f"已选择 rpy 文件：{rpy}")
+            self._log("点「导入」开始解析")
+
     def _choose_directory(self) -> None:
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
         
