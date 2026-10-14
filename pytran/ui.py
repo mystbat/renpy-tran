@@ -224,20 +224,26 @@ class PytranApp:
         main_layout.addWidget(self._widgets["log"])
         
         # Shortcuts — 单字符键仅在审校列表聚焦时生效（WidgetWithChildrenShortcut），
-        # 否则会劫持译文编辑框的打字输入。
+        # 否则会劫持译文编辑框的打字输入。PyQt6 的 QShortcut 构造不支持
+        # (key, parent, context) 三参重载 → 用 setContext 属性设置。
         from PyQt6.QtGui import QShortcut, QKeySequence
         from PyQt6.QtCore import Qt
         listbox = self._widgets.get("listbox")
         if listbox is not None:
             listbox.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             ctx = Qt.ShortcutContext.WidgetWithChildrenShortcut
-            QShortcut(QKeySequence("A"), listbox, ctx).activated.connect(self._on_accept)
-            QShortcut(QKeySequence("F"), listbox, ctx).activated.connect(self._on_flag)
-            QShortcut(QKeySequence("J"), listbox, ctx).activated.connect(
-                lambda: self._navigate_list(1))
-            QShortcut(QKeySequence("K"), listbox, ctx).activated.connect(
-                lambda: self._navigate_list(-1))
-        QShortcut(QKeySequence("Ctrl+S"), window).activated.connect(self._on_accept)
+
+            def _scoped(key: str, slot) -> None:
+                sc = QShortcut(QKeySequence(key), listbox)
+                sc.setContext(ctx)
+                sc.activated.connect(slot)
+
+            _scoped("A", self._on_accept)
+            _scoped("F", self._on_flag)
+            _scoped("J", lambda: self._navigate_list(1))
+            _scoped("K", lambda: self._navigate_list(-1))
+        sc_save = QShortcut(QKeySequence("Ctrl+S"), window)
+        sc_save.activated.connect(self._on_accept)
 
         self._refresh_all()
         self._log("就绪。步骤：选择目录 → 导入 → 翻译 → 审校 → 导出写回；API Key 在「⚙ 设置」中填写")
