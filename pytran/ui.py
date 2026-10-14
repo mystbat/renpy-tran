@@ -408,6 +408,8 @@ class PytranApp:
         if stack:
             stack.setCurrentIndex(idx)
         self._highlight_active_step(idx)
+        if idx == 3:
+            self._refresh_review()
 
     def _highlight_active_step(self, active_idx: int) -> None:
         for i, b in enumerate(self._widgets.get("steps", [])):
@@ -699,8 +701,11 @@ class PytranApp:
         self._refresh_import_tree()
         self._refresh_steps()
         self._refresh_progress()
-        self._refresh_review()
         self._refresh_tools()
+        # 仅当处于审校页（Step 3）时才刷新审校列表，避免工程量大时阻塞启动
+        stack = self._widgets.get("stack")
+        if stack and stack.currentIndex() == 3:
+            self._refresh_review()
 
     def _refresh_dir_label(self) -> None:
         lbl = self._widgets.get("dir_label")
@@ -858,7 +863,10 @@ class PytranApp:
         from PyQt6.QtGui import QColor, QBrush
         from PyQt6.QtWidgets import QListWidgetItem
         
-        for item in self.state.review_items():
+        items = self.state.review_items()
+        # 对海量数据（如几万条）做视窗分批保护，默认展示前 1000 条，避免创建数万个 QListWidgetItem 导致 UI 无响应
+        max_display = 1000
+        for item in items[:max_display]:
             tag = item.status.name
             text = f"[{tag}] {item.source[:30]}"
             witem = QListWidgetItem(text)
@@ -870,6 +878,11 @@ class PytranApp:
                 witem.setForeground(QBrush(QColor("green")))
                 
             lb.addItem(witem)
+
+        if len(items) > max_display:
+            hint_item = QListWidgetItem(f"…… 仅展示前 {max_display} 条（共 {len(items)} 条），可用筛选器缩小范围")
+            hint_item.setForeground(QBrush(QColor("#888888")))
+            lb.addItem(hint_item)
             
         if lb.count() > 0:
             idx = min(self.state._review_index, lb.count() - 1)
