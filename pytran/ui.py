@@ -77,10 +77,29 @@ class PytranApp:
         # 其它事件（round/started/...）忽略或扩展
 
     # -- 后台翻译（子线程只发事件，不碰控件） -------------------------------
+    def _ensure_engine_ready(self) -> bool:
+        """翻译前检查引擎依赖；未配置（无 Key）时引导设置并返回 False。"""
+        if self.deps is not None and self.deps.engine is not None:
+            return True
+        try:
+            self.deps = self._build_default_deps()
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"无法初始化翻译引擎：{exc}")
+            self._log("请在「⚙ 设置」中填写 API Key 后重试")
+            return False
+        if self.deps.engine is None:
+            self._log("尚未配置 API Key：请点「⚙ 设置」填写后保存")
+            return False
+        return True
+
     def _translate_in_background(self) -> None:
+        if not self._ensure_engine_ready():
+            self.on_event("progress", {})
+            return
+
         def worker() -> None:
             try:
-                deps = self.deps or self._build_default_deps()
+                deps = self.deps
                 deps.engine.run(self.project, deps.config, self._load_profile(),
                                 on_event=self.on_event)
                 self.state.goto(3)  # 翻译完进审校
@@ -185,6 +204,13 @@ class PytranApp:
             for attr, e in entries.items():
                 setattr(cfg, attr, e.get().strip())
             cfg.save(self.work_dir)
+            # Key 已填 → 立即重建依赖（provider/engine），无需重启 GUI
+            if cfg.api_key and (self.deps is None or self.deps.engine is None):
+                try:
+                    self.deps = self._build_default_deps()
+                    self._log("依赖已就绪：可以开始翻译")
+                except Exception as exc:  # noqa: BLE001
+                    self._log(f"依赖重建失败：{exc}")
             messagebox.showinfo("设置", "已保存到 config.ini（API Key 不会写入文件，\n"
                                         "持久化请将其设为系统环境变量 TL_API_KEY）")
             dlg.destroy()

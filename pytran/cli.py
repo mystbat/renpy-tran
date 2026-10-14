@@ -308,14 +308,27 @@ def cmd_import_csv(csv_path: Path, *, work_dir: Path) -> int:
 
 
 def cmd_ui(work_dir: Path) -> int:
-    """启动图形审校界面（§9）。"""
+    """启动图形审校界面（§9）。
+
+    GUI 必须先于任何依赖校验启动（用户要在设置对话框里填 API Key）：
+    provider 缺 Key 时不构造（传 None 延迟到真正翻译时再建），工程为空也允许
+    进入 UI（设置/导入入口仍可用）。
+    """
     work_dir = Path(work_dir)
-    deps = build_deps(work_dir)
+    # GUI 先于依赖校验启动：无 Key 时以未配置模式进入（用户在设置对话框填 Key）
+    try:
+        deps = build_deps(work_dir)
+    except Exception as exc:  # noqa: BLE001 - 缺 Key/网络配置错误都不该挡住 GUI
+        logger.warning("provider 未就绪（%s）；GUI 以未配置模式启动，"
+                       "请在「⚙ 设置」中填写 API Key", exc)
+        deps = build_deps(work_dir, allow_missing_provider=True)
     project = deps.store.load(work_dir)
     if not project.segments:
-        logger.error("ui：工程为空（未找到 %s），请先 translate / game / migrate",
-                     work_dir / "project.json")
-        return 1
+        logger.warning(
+            "工程为空（未找到 %s）：可在 UI 中选择游戏目录 / 导入，"
+            "或在设置中填好 Key 后用 translate / game 命令开始",
+            work_dir / "project.json",
+        )
     from pytran.ui import PytranApp
 
     PytranApp(project, deps=deps, work_dir=work_dir).run()
@@ -325,8 +338,18 @@ def cmd_ui(work_dir: Path) -> int:
 # --------------------------------------------------------------------------- #
 # 生产依赖组装 + argparse 入口
 # --------------------------------------------------------------------------- #
-def build_deps(work_dir: Path, *, provider: Optional[Provider] = None) -> CliDeps:
-    """组装真实依赖；``provider`` 可注入（测试用）。"""
+def build_deps(
+    work_dir: Path,
+    *,
+    provider: Optional[Provider] = None,
+    allow_missing_provider: bool = False,
+) -> CliDeps:
+    """组装真实依赖；``provider`` 可注入（测试用）。
+
+    ``allow_missing_provider=True``（GUI 启动场景）：API Key 未配置时
+    ``provider``/``engine`` 返回 None 而不抛错——用户在 UI 设置对话框里
+    填好 Key 后，翻译入口会重新组装依赖（见 ui._ensure_engine_ready）。
+    """
     from pytran.engine import TranslationEngine
     from pytran.exporter import ExporterImpl
     from pytran.journal import JsonWriteJournal
@@ -335,13 +358,15 @@ def build_deps(work_dir: Path, *, provider: Optional[Provider] = None) -> CliDep
     from pytran.validators import Validator
 
     config = Config.load(work_dir)
-    if provider is None:
+    if provider is None and allow_missing_provider and not config.api_key:
+        provider = None  # GUI 未配置模式：engine 同为 None
+    elif provider is None:
         provider = OpenAIProvider(config)
     exporter = ExporterImpl(RenpyParser())
     return CliDeps(
         config=config,
         provider=provider,
-        engine=TranslationEngine(provider, Validator()),
+        engine=None if provider is None else TranslationEngine(provider, Validator()),
         exporter=exporter,
         unren=UnrenImpl(),
         store=JsonProjectStore(),
