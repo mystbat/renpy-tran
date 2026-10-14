@@ -112,7 +112,7 @@ class PytranApp:
         root.mainloop()
 
     def _build_widgets(self, root, ttk) -> None:
-        # §9 顶部五步条
+        # §9 顶部五步条 + 设置入口
         steps = ["选择目录", "导入", "翻译", "审校", "导出写回"]
         step_frame = ttk.Frame(root)
         step_frame.grid(row=0, column=0, sticky="ew")
@@ -122,6 +122,8 @@ class PytranApp:
                            command=lambda idx=i: self._on_step(idx))
             b.grid(row=0, column=i, padx=2)
             self._widgets["steps"].append(b)
+        ttk.Button(step_frame, text="⚙ 设置",
+                   command=self._open_settings).grid(row=0, column=len(steps), padx=(8, 2))
 
         # §9 进度条
         self._widgets["progress"] = ttk.Progressbar(root, length=300, mode="determinate")
@@ -153,6 +155,42 @@ class PytranApp:
         # §9 日志面板
         self._widgets["log"] = tk.Text(root, height=6, state="disabled")
         self._widgets["log"].grid(row=5, column=0, sticky="ew")
+
+    # -- 设置对话框（§9：API Key/模型/SDK/语言） -----------------------------
+    def _open_settings(self) -> None:
+        import tkinter as tk
+        from tkinter import ttk, messagebox
+
+        dlg = tk.Toplevel(self._root)
+        dlg.title("设置")
+        dlg.grab_set()
+        cfg = self._build_default_deps().config if self.deps is None else self.deps.config
+
+        fields = [
+            ("API Key（存环境变量持久化请用系统设置）", "api_key", True),
+            ("模型地址 (URL)", "api_url", False),
+            ("模型名称", "model", False),
+            ("Ren'Py SDK 目录（可选，生成 tl 骨架）", "renpy_sdk_dir", False),
+            ("目标语言", "language", False),
+        ]
+        entries: dict[str, ttk.Entry] = {}
+        for i, (label, attr, secret) in enumerate(fields):
+            ttk.Label(dlg, text=label).grid(row=i, column=0, sticky="w", padx=6, pady=3)
+            e = ttk.Entry(dlg, width=52, show="*" if secret else "")
+            e.insert(0, str(getattr(cfg, attr, "") or ""))
+            e.grid(row=i, column=1, padx=6, pady=3)
+            entries[attr] = e
+
+        def save() -> None:
+            for attr, e in entries.items():
+                setattr(cfg, attr, e.get().strip())
+            cfg.save(self.work_dir)
+            messagebox.showinfo("设置", "已保存到 config.ini（API Key 不会写入文件，\n"
+                                        "持久化请将其设为系统环境变量 TL_API_KEY）")
+            dlg.destroy()
+
+        ttk.Button(dlg, text="保存", command=save).grid(
+            row=len(fields), column=0, columnspan=2, pady=8)
 
     # -- 控件 → 状态 ---------------------------------------------------------
     def _on_step(self, idx: int) -> None:
