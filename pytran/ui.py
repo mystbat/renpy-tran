@@ -65,7 +65,7 @@ class PytranApp:
                 pb.setValue(int(100.0 * data.get("done", 0) / total))
             lbl = self._widgets.get("progress_label")
             if lbl is not None:
-                lbl.config(text=data.get("text", ""))
+                lbl.setText(data.get("text", ""))
 
     def _ensure_engine_ready(self) -> bool:
         if self.deps is not None and self.deps.engine is not None:
@@ -223,13 +223,21 @@ class PytranApp:
         self._widgets["log"].setFixedHeight(100)
         main_layout.addWidget(self._widgets["log"])
         
-        # Shortcuts
+        # Shortcuts — 单字符键仅在审校列表聚焦时生效（WidgetWithChildrenShortcut），
+        # 否则会劫持译文编辑框的打字输入。
         from PyQt6.QtGui import QShortcut, QKeySequence
-        QShortcut(QKeySequence("A"), window).activated.connect(self._on_accept)
-        QShortcut(QKeySequence("F"), window).activated.connect(self._on_flag)
+        from PyQt6.QtCore import Qt
+        listbox = self._widgets.get("listbox")
+        if listbox is not None:
+            listbox.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            ctx = Qt.ShortcutContext.WidgetWithChildrenShortcut
+            QShortcut(QKeySequence("A"), listbox, ctx).activated.connect(self._on_accept)
+            QShortcut(QKeySequence("F"), listbox, ctx).activated.connect(self._on_flag)
+            QShortcut(QKeySequence("J"), listbox, ctx).activated.connect(
+                lambda: self._navigate_list(1))
+            QShortcut(QKeySequence("K"), listbox, ctx).activated.connect(
+                lambda: self._navigate_list(-1))
         QShortcut(QKeySequence("Ctrl+S"), window).activated.connect(self._on_accept)
-        QShortcut(QKeySequence("J"), window).activated.connect(lambda: self._navigate_list(1))
-        QShortcut(QKeySequence("K"), window).activated.connect(lambda: self._navigate_list(-1))
 
         self._refresh_all()
         self._log("就绪。步骤：选择目录 → 导入 → 翻译 → 审校 → 导出写回；API Key 在「⚙ 设置」中填写")
@@ -331,6 +339,7 @@ class PytranApp:
             
         if game_dir:
             self.project.game_root = game_dir
+            JsonProjectStore().save(self.project, self.work_dir)
             self.state.goto(1)
             self._refresh_tools()  # 解包/写回按钮的置灰依赖 game_root，选完立即刷新
             # 给用户一个状态判断：有 rpy 直接导入；只有 rpa/rpyc 需要先解包

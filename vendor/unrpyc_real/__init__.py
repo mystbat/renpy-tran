@@ -81,17 +81,18 @@ def decompile_file(
     dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
 
-    # Work in a scratch dir *inside* the destination directory so that:
-    #   (a) read-only game/SDK source dirs never block the upstream's
-    #       next-to-source write, and
-    #   (b) we never touch the OS temp root (which, under the DSH workspace
-    #       sandbox, may be a non-writable location). The caller's output dir is
-    #       always writable.
+    # Work in a per-job scratch dir under the OS temp root (NOT the game
+    # directory): the game dir may be read-only, may sit under a sandbox that
+    # denies new dirs, and parallel/nested job staging produced
+    # ``.unrpyc_real_work/.unrpyc_real_work`` conflicts (user-reported crash).
+    # The upstream writes its .rpy next to the scratch source; we then copy the
+    # result out to ``dst`` and remove the scratch dir.
     import tempfile
 
-    base = dst.parent
-    td = base / ".unrpyc_real_work"
-    td.mkdir(parents=True, exist_ok=True)
+    # Scratch dir under the OS temp root (writable for the user running the
+    # game; never the read-only game dir). UNRPYC_WORK_DIR overrides for
+    # sandboxed/locked-down environments where the default temp root is denied.
+    td = Path(tempfile.mkdtemp(prefix="unrpyc_work_"))
     work = td / "src.rpyc"
     work.write_bytes(src.read_bytes())
     produced = unrpyc.decompile_rpyc(
@@ -104,6 +105,7 @@ def decompile_file(
     if produced:
         produced_path = work.with_suffix(".rpy")
         if produced_path.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
             dst.write_bytes(produced_path.read_bytes())
             result = str(dst)
     # best-effort cleanup of the scratch dir
