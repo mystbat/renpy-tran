@@ -122,6 +122,7 @@ class PytranApp:
         import tkinter as tk
         from tkinter import ttk
 
+        self._tk = tk  # 供 _build_widgets/_open_settings 等方法使用（延迟 import 策略）
         root = tk.Tk()
         root.title("pytran 3.0")
         self._root = root
@@ -153,10 +154,10 @@ class PytranApp:
         # §9 审校页：左列表 + 右编辑框
         review = ttk.Frame(root)
         review.grid(row=3, column=0, sticky="nsew")
-        self._widgets["listbox"] = tk.Listbox(review, height=10)
+        self._widgets["listbox"] = self._tk.Listbox(review, height=10)
         self._widgets["listbox"].grid(row=0, column=0, sticky="ns")
         self._widgets["listbox"].bind("<<ListboxSelect>>", self._on_list_select)
-        self._widgets["editor"] = tk.Text(review, height=6, width=40)
+        self._widgets["editor"] = self._tk.Text(review, height=6, width=40)
         self._widgets["editor"].grid(row=0, column=1, sticky="nsew")
         ttk.Button(review, text="a 通过(Ctrl+S)", command=self._on_accept).grid(row=1, column=0)
         ttk.Button(review, text="f 失败", command=self._on_flag).grid(row=1, column=1)
@@ -172,15 +173,15 @@ class PytranApp:
         self._widgets["writeback"].grid(row=0, column=1)
 
         # §9 日志面板
-        self._widgets["log"] = tk.Text(root, height=6, state="disabled")
+        self._widgets["log"] = self._tk.Text(root, height=6, state="disabled")
         self._widgets["log"].grid(row=5, column=0, sticky="ew")
 
     # -- 设置对话框（§9：API Key/模型/SDK/语言） -----------------------------
     def _open_settings(self) -> None:
-        import tkinter as tk
         from tkinter import ttk, messagebox
 
-        dlg = tk.Toplevel(self._root)
+        tk = self._tk
+        dlg = self._tk.Toplevel(self._root)
         dlg.title("设置")
         dlg.grab_set()
         cfg = self._build_default_deps().config if self.deps is None else self.deps.config
