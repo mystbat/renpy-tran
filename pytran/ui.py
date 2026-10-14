@@ -115,7 +115,11 @@ class PytranApp:
 
     def run(self) -> None:  # pragma: no cover
         import sys
-        from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QProgressBar, QLabel, QListWidget, QTextEdit, QSplitter, QStackedWidget
+        from PyQt6.QtWidgets import (
+            QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+            QPushButton, QProgressBar, QLabel, QListWidget, QTextEdit,
+            QSplitter, QStackedWidget, QTreeWidget, QTreeWidgetItem, QHeaderView
+        )
         from PyQt6.QtCore import QTimer, Qt
         
         self._qt = __import__("PyQt6")
@@ -182,20 +186,55 @@ class PytranApp:
         choose_btns.addWidget(self._widgets["btn_choose_file"])
         choose_layout.addLayout(choose_btns)
         
+        # 扫描状态提示横幅
+        self._widgets["choose_banner"] = QLabel("请先选择游戏根目录或 .rpy 脚本。")
+        self._widgets["choose_banner"].setStyleSheet("padding: 6px; font-weight: bold; background-color: #f0f0f0; border-radius: 4px;")
+        choose_layout.addWidget(self._widgets["choose_banner"])
+        
+        # 扫描文件清单树
+        self._widgets["scan_tree"] = QTreeWidget()
+        self._widgets["scan_tree"].setHeaderLabels(["文件类型", "文件路径 / 名称", "建议操作"])
+        self._widgets["scan_tree"].header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        choose_layout.addWidget(self._widgets["scan_tree"], stretch=1)
+        
         self._widgets["btn_unpack"] = QPushButton("解包+反编译 (如果是未解包的 rpa/rpyc 游戏，点击此项)")
         self._widgets["btn_unpack"].clicked.connect(self._on_unpack)
         choose_layout.addWidget(self._widgets["btn_unpack"])
-        choose_layout.addStretch()
         self._widgets["stack"].addWidget(page_choose)
         
         # --- Page 1: Import ---
         page_import = QWidget()
         import_layout = QVBoxLayout(page_import)
-        import_layout.addWidget(QLabel("第二步：扫描并解析目录下的脚本文件。"))
-        self._widgets["btn_import"] = QPushButton("开始解析/导入")
+        import_layout.addWidget(QLabel("第二步：扫描并勾选要导入的脚本文件。"))
+        
+        import_bar = QHBoxLayout()
+        self._widgets["btn_select_all"] = QPushButton("全选")
+        self._widgets["btn_select_all"].clicked.connect(lambda: self._set_all_import_checks(True))
+        import_bar.addWidget(self._widgets["btn_select_all"])
+        
+        self._widgets["btn_select_none"] = QPushButton("全不选")
+        self._widgets["btn_select_none"].clicked.connect(lambda: self._set_all_import_checks(False))
+        import_bar.addWidget(self._widgets["btn_select_none"])
+        
+        import_bar.addStretch()
+        
+        self._widgets["btn_import_selected"] = QPushButton("导入勾选的脚本")
+        self._widgets["btn_import_selected"].clicked.connect(self._import_selected_rpy)
+        import_bar.addWidget(self._widgets["btn_import_selected"])
+        
+        self._widgets["btn_import"] = QPushButton("全部导入")
         self._widgets["btn_import"].clicked.connect(self._import_rpy)
-        import_layout.addWidget(self._widgets["btn_import"])
-        import_layout.addStretch()
+        import_bar.addWidget(self._widgets["btn_import"])
+        import_layout.addLayout(import_bar)
+        
+        # 待导入脚本树状/勾选表格
+        self._widgets["import_tree"] = QTreeWidget()
+        self._widgets["import_tree"].setHeaderLabels(["选择", "相对路径", "文件大小", "导入状态"])
+        self._widgets["import_tree"].header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        import_layout.addWidget(self._widgets["import_tree"], stretch=1)
+        
+        self._widgets["import_summary"] = QLabel("就绪")
+        import_layout.addWidget(self._widgets["import_summary"])
         self._widgets["stack"].addWidget(page_import)
         
         # --- Page 2: Translate ---
@@ -475,7 +514,56 @@ class PytranApp:
             self._log(f"已选择 rpy 文件：{rpy}")
             self._log("点「导入」开始解析")
 
+    def _set_all_import_checks(self, checked: bool) -> None:
+        tree = self._widgets.get("import_tree")
+        if not tree:
+            return
+        from PyQt6.QtCore import Qt
+        for i in range(tree.topLevelItemCount()):
+            item = tree.topLevelItem(i)
+            item.setCheckState(0, Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+
+    def _import_selected_rpy(self) -> None:
+        tree = self._widgets.get("import_tree")
+        if not tree:
+            return
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtWidgets import QMessageBox
+        selected_files: list[Path] = []
+        for i in range(tree.topLevelItemCount()):
+            item = tree.topLevelItem(i)
+            if item.checkState(0) == Qt.CheckState.Checked:
+                path_obj = item.data(1, Qt.ItemDataRole.UserRole)
+                if path_obj:
+                    selected_files.append(Path(path_obj))
+        if not selected_files:
+            QMessageBox.information(self._window, "导入", "请至少勾选一个需要导入的脚本文件！")
+            return
+        self._do_import_files(selected_files)
+
     def _import_rpy(self) -> None:
+        # 全部导入：扫描候选清单并全部导入
+        all_files = self._get_discovered_rpy_files()
+        if not all_files:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(self._window, "导入", "未发现可供导入的 .rpy 文件，请先在「选择目录」中选择游戏或解包。")
+            return
+        self._do_import_files(all_files)
+
+    def _get_discovered_rpy_files(self) -> list[Path]:
+        files: list[Path] = []
+        game_root = self.project.game_root
+        if game_root:
+            tl = Path(game_root) / "game" / "tl"
+            pattern = tl if tl.is_dir() else Path(game_root) / "game"
+            files = sorted(pattern.glob("**/*.rpy"))
+        elif getattr(self, "_pending_rpy", None):
+            p = Path(self._pending_rpy)
+            if p.is_file():
+                files = [p]
+        return files
+
+    def _do_import_files(self, target_files: list[Path]) -> None:
         from PyQt6.QtWidgets import QMessageBox
         parser = None
         try:
@@ -487,33 +575,21 @@ class PytranApp:
         segs = []
         files = []
         game_root = self.project.game_root
-        if game_root:
-            tl = Path(game_root) / "game" / "tl"
-            pattern = tl if tl.is_dir() else Path(game_root) / "game"
-            for rpy in sorted(pattern.glob("**/*.rpy")):
-                rel = rpy.relative_to(Path(game_root) / "game").as_posix()
-                segs.extend(parser.parse_file(rpy, game_relpath=rel))
-                files.append((rel, rpy))
-            if not segs:
-                game = Path(game_root) / "game"
-                n_rpa = len(list(game.glob("*.rpa"))) if game.is_dir() else 0
-                n_rpyc = len(list(game.glob("**/*.rpyc"))) if game.is_dir() else 0
-                if n_rpa or n_rpyc:
-                    self._log("未找到 .rpy，但发现未解包的 RPA/rpyc "
-                              f"（{n_rpa} RPA / {n_rpyc} rpyc）"
-                              "→ 请先点「解包+反编译」，完成后再回来「导入」")
-                else:
-                    self._log(f"在 {pattern} 未找到任何 .rpy / .rpyc / .rpa；"
-                              "请确认这是游戏根目录，或用 Ren'Py SDK 生成翻译骨架")
-                return
-        elif getattr(self, "_pending_rpy", None):
-            rpy = Path(self._pending_rpy)
-            segs.extend(parser.parse_file(rpy, game_relpath=rpy.name))
-            files.append((rpy.name, rpy))
-        else:
-            QMessageBox.information(self._window, "导入", "请先在「选择目录」中指定游戏目录或 rpy 文件")
+        for rpy in target_files:
+            if game_root:
+                try:
+                    rel = rpy.relative_to(Path(game_root) / "game").as_posix()
+                except ValueError:
+                    rel = rpy.name
+            else:
+                rel = rpy.name
+            segs.extend(parser.parse_file(rpy, game_relpath=rel))
+            files.append((rel, rpy))
+
+        if not segs:
+            self._log("未从选中脚本中解析出有效文本段落。")
             return
-            
+
         from pytran.models import GameFile
         from pytran.project import build_project
         import hashlib
@@ -524,8 +600,9 @@ class PytranApp:
         self.state = type(self.state)(self.project)
         self.state.goto(2)
         JsonProjectStore().save(self.project, self.work_dir)
-        self._log(f"导入完成：{len(segs)} 段（skipped {self.project.stats.skipped}）→ project.json 已保存")
-        self._log("点「翻译」开始（请确认已在 ⚙ 设置中填好 API Key）")
+        self._log(f"导入完成：从 {len(files)} 个文件中解析出 {len(segs)} 段（skipped {self.project.stats.skipped}）→ project.json 已保存")
+        self._log("已自动激活「翻译」阶段，点击「开始自动翻译」即可启动")
+        self._refresh_all()
 
     def _start_translate(self) -> None:
         if not self._ensure_engine_ready():
@@ -618,6 +695,8 @@ class PytranApp:
 
     def _refresh_all(self) -> None:
         self._refresh_dir_label()
+        self._refresh_scan_tree()
+        self._refresh_import_tree()
         self._refresh_steps()
         self._refresh_progress()
         self._refresh_review()
@@ -632,6 +711,118 @@ class PytranApp:
         elif getattr(self, "_pending_rpy", None):
             text += f"   |   选定文件: {self._pending_rpy}"
         lbl.setText(text)
+
+    def _refresh_scan_tree(self) -> None:
+        tree = self._widgets.get("scan_tree")
+        banner = self._widgets.get("choose_banner")
+        if not tree:
+            return
+        tree.clear()
+        
+        game_root = self.project.game_root
+        from PyQt6.QtWidgets import QTreeWidgetItem
+        from PyQt6.QtGui import QColor, QBrush
+        
+        if not game_root and not getattr(self, "_pending_rpy", None):
+            if banner:
+                banner.setText("尚未选择游戏目录或脚本文件。请点击上方按钮进行选择。")
+                banner.setStyleSheet("padding: 8px; font-weight: bold; background-color: #fff3cd; color: #856404; border-radius: 4px;")
+            return
+            
+        if getattr(self, "_pending_rpy", None) and not game_root:
+            p = Path(self._pending_rpy)
+            item = QTreeWidgetItem(["RPY 源码", p.name, "就绪：可切换到「导入」页解析"])
+            item.setForeground(0, QBrush(QColor("#2e7d32")))
+            tree.addTopLevelItem(item)
+            if banner:
+                banner.setText("✅ 单脚本文件模式已就绪，请点击下一步「导入」开始解析。")
+                banner.setStyleSheet("padding: 8px; font-weight: bold; background-color: #d4edda; color: #155724; border-radius: 4px;")
+            return
+
+        game = Path(game_root) / "game"
+        if not game.is_dir():
+            if banner:
+                banner.setText("⚠️ 未检测到有效的 game/ 子目录，请检查所选路径是否为 Ren'Py 游戏根目录。")
+                banner.setStyleSheet("padding: 8px; font-weight: bold; background-color: #f8d7da; color: #721c24; border-radius: 4px;")
+            return
+
+        rpa_files = sorted(game.glob("*.rpa"))
+        rpyc_files = sorted(game.glob("**/*.rpyc"))
+        rpy_files = sorted(game.glob("**/*.rpy"))
+
+        for f in rpa_files:
+            rel = f.relative_to(game_root).as_posix()
+            item = QTreeWidgetItem(["RPA 归档", rel, "需解包（点击下方「解包+反编译」）"])
+            item.setForeground(0, QBrush(QColor("#d32f2f")))
+            tree.addTopLevelItem(item)
+
+        for f in rpyc_files:
+            rel = f.relative_to(game_root).as_posix()
+            item = QTreeWidgetItem(["RPYC 字节码", rel, "需反编译（点击下方「解包+反编译」）"])
+            item.setForeground(0, QBrush(QColor("#e65100")))
+            tree.addTopLevelItem(item)
+
+        for f in rpy_files:
+            rel = f.relative_to(game_root).as_posix()
+            item = QTreeWidgetItem(["RPY 源码", rel, "就绪（可直接在「导入」页勾选导入）"])
+            item.setForeground(0, QBrush(QColor("#2e7d32")))
+            tree.addTopLevelItem(item)
+
+        if banner:
+            if rpy_files:
+                banner.setText(f"✅ 检测到 {len(rpy_files)} 个 .rpy 源码脚本！已就绪，请点击下一步「导入」进行解析。")
+                banner.setStyleSheet("padding: 8px; font-weight: bold; background-color: #d4edda; color: #155724; border-radius: 4px;")
+            elif rpa_files or rpyc_files:
+                banner.setText(f"⚠️ 发现 {len(rpa_files)} 个 RPA 归档包 / {len(rpyc_files)} 个 rpyc 字节码（游戏处于封包状态），请先点击下方「解包+反编译」！")
+                banner.setStyleSheet("padding: 8px; font-weight: bold; background-color: #fff3cd; color: #856404; border-radius: 4px;")
+            else:
+                banner.setText("未在 game/ 目录下找到任何脚本或归档文件。")
+                banner.setStyleSheet("padding: 8px; font-weight: bold; background-color: #f8d7da; color: #721c24; border-radius: 4px;")
+
+    def _refresh_import_tree(self) -> None:
+        tree = self._widgets.get("import_tree")
+        summary = self._widgets.get("import_summary")
+        if not tree:
+            return
+        from PyQt6.QtWidgets import QTreeWidgetItem
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtGui import QColor, QBrush
+
+        tree.clear()
+        discovered = self._get_discovered_rpy_files()
+        imported_files_set = {gf.name for gf in self.project.files}
+
+        for p in discovered:
+            game_root = self.project.game_root
+            if game_root:
+                try:
+                    rel = p.relative_to(Path(game_root) / "game").as_posix()
+                except ValueError:
+                    rel = p.name
+            else:
+                rel = p.name
+
+            try:
+                sz = f"{p.stat().st_size / 1024:.1f} KB"
+            except OSError:
+                sz = "-"
+
+            is_imported = rel in imported_files_set
+            status_text = "已导入" if is_imported else "未导入"
+
+            item = QTreeWidgetItem(["", rel, sz, status_text])
+            item.setCheckState(0, Qt.CheckState.Checked)
+            item.setData(1, Qt.ItemDataRole.UserRole, str(p))
+
+            if is_imported:
+                item.setForeground(3, QBrush(QColor("#2e7d32")))
+            else:
+                item.setForeground(3, QBrush(QColor("#757575")))
+            tree.addTopLevelItem(item)
+
+        if summary:
+            total_segs = len(self.project.segments)
+            summary.setText(f"发现可用脚本：{len(discovered)} 个 | 当前工程已导入段落：{total_segs} 条（未译：{self.project.stats.pending}，跳过：{self.project.stats.skipped}）")
 
     def _refresh_steps(self) -> None:
         # 所有选项卡均可自由点击切换（选项卡自由导航模式）
