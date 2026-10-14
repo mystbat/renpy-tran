@@ -67,7 +67,7 @@ def _read_index_obfuscated(f, header_rest: bytes) -> Dict[str, List[Tuple[int, i
             raise RpaError(f"bad obfuscation key in header: {parts[1]!r}") from exc
 
     f.seek(index_offset)
-    compressed = f.read(4_000_000)
+    compressed = f.read()  # to EOF — index sits at file end; cap would truncate
     candidates = (compressed, _deobfuscate(compressed, key))
     index = None
     last_error = None
@@ -82,20 +82,31 @@ def _read_index_obfuscated(f, header_rest: bytes) -> Dict[str, List[Tuple[int, i
     if not isinstance(index, dict):
         raise RpaError("RPA index is not a mapping")
 
-    # Normalise entries to (offset, dlen) — official loader.py semantics:
-    #   index[k] = [(offset ^ key, dlen ^ key), ...]
-    # (field 2 is the *length*, not an end offset.)
-    decoded: Dict[str, List[Tuple[int, int]]] = {}
+    # Normalise entries to (offset, dlen, prefix) — official loader.py semantics:
+    #   2-tuple: index[k] = [(offset ^ key, dlen ^ key), ...]
+    #   3-tuple: (offset ^ key, dlen ^ key, start_bytes) — start_bytes are the
+    #   file's leading bytes stored *in the index* (dedup optimisation); full
+    #   content = start_bytes + archive[offset:offset+dlen].
+    decoded: Dict[str, List[Tuple[int, int, bytes]]] = {}
     for name, entries in index.items():
-        spans: List[Tuple[int, int]] = []
+        spans: List[Tuple[int, int, bytes]] = []
         for entry in entries:
             if key:
-                numbers = [v ^ key for v in entry if isinstance(v, int)]
-                if len(numbers) >= 2:
-                    spans.append((numbers[0], numbers[1]))
+                ints = [v ^ key for v in entry if isinstance(v, int)]
+                if len(ints) >= 2:
+                    off, dlen = ints[0], ints[1]
+                else:
                     continue
-            if len(entry) >= 2:
-                spans.append((entry[0], entry[1]))
+            else:
+                off, dlen = entry[0], entry[1]
+            prefix = b""
+            if len(entry) >= 3:
+                s = entry[2]
+                if isinstance(s, bytes):
+                    prefix = s
+                elif s:
+                    prefix = s.encode("latin-1")
+            spans.append((off, dlen, prefix))
         decoded[name] = spans
     return decoded
 
@@ -181,9 +192,13 @@ def extract_archive(
 
             dest.parent.mkdir(parents=True, exist_ok=True)
             with dest.open("wb") as out:
-                for offset, length in parts:
+                for entry in parts:
+                    offset, dlen = entry[0], entry[1]
+                    prefix = entry[2] if len(entry) >= 3 else b""
+                    if prefix:
+                        out.write(prefix)
                     f.seek(offset)
-                    remaining = length
+                    remaining = dlen
                     while remaining > 0:
                         chunk = f.read(min(remaining, 1 << 20))
                         if not chunk:

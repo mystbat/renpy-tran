@@ -60,10 +60,14 @@ class PytranApp:
             self._log(data.get("message", ""), data.get("level", "info"))
         elif name == "unpack_progress":
             pb = self._widgets.get("progress")
-            if pb is not None:
-                total = data.get("total") or 1
-                pb.setValue(int(100.0 * data.get("done", 0) / total))
             lbl = self._widgets.get("progress_label")
+            total = data.get("total") or 0
+            if pb is not None:
+                if total <= 0:
+                    pb.setRange(0, 0)  # busy 指示器（反编译阶段无逐步进度）
+                else:
+                    pb.setRange(0, 100)
+                    pb.setValue(int(100.0 * data.get("done", 0) / total))
             if lbl is not None:
                 lbl.setText(data.get("text", ""))
 
