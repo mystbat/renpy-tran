@@ -124,10 +124,22 @@ class PytranApp:
 
         self._tk = tk  # 供 _build_widgets/_open_settings 等方法使用（延迟 import 策略）
         root = tk.Tk()
-        root.title("pytran 3.0")
+        root.title("pytran 3.0 — Ren'Py AI 汉化工具")
+        root.geometry("1100x700")
+        root.minsize(860, 560)
+        # 居中
+        root.update_idletasks()
+        x = (root.winfo_screenwidth() - 1100) // 2
+        y = (root.winfo_screenheight() - 700) // 3
+        root.geometry(f"+{max(x, 0)}+{max(y, 0)}")
         self._root = root
         self._build_widgets(root, ttk)
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(3, weight=1)   # 审校区可伸缩
         self._refresh_all()
+        # 启动提示移入日志区（stderr 只留真正的错误）
+        self._log("就绪。步骤：选择目录 → 导入 → 翻译 → 审校 → 导出写回；"
+                  "API Key 在「⚙ 设置」中填写")
         root.after(100, self._drain_events)
         root.mainloop()
 
@@ -154,11 +166,20 @@ class PytranApp:
         # §9 审校页：左列表 + 右编辑框
         review = ttk.Frame(root)
         review.grid(row=3, column=0, sticky="nsew")
-        self._widgets["listbox"] = self._tk.Listbox(review, height=10)
+        self._widgets["listbox"] = self._tk.Listbox(review, height=12, width=48)
         self._widgets["listbox"].grid(row=0, column=0, sticky="ns")
         self._widgets["listbox"].bind("<<ListboxSelect>>", self._on_list_select)
-        self._widgets["editor"] = self._tk.Text(review, height=6, width=40)
-        self._widgets["editor"].grid(row=0, column=1, sticky="nsew")
+        lb_sb = ttk.Scrollbar(review, orient="vertical",
+                              command=self._widgets["listbox"].yview)
+        lb_sb.grid(row=0, column=1, sticky="ns")
+        self._widgets["listbox"].config(yscrollcommand=lb_sb.set)
+        self._widgets["editor"] = self._tk.Text(review, height=12, width=60,
+                                                wrap="word")
+        self._widgets["editor"].grid(row=0, column=2, sticky="nsew")
+        ed_sb = ttk.Scrollbar(review, orient="vertical",
+                              command=self._widgets["editor"].yview)
+        ed_sb.grid(row=0, column=3, sticky="ns")
+        self._widgets["editor"].config(yscrollcommand=ed_sb.set)
         ttk.Button(review, text="a 通过(Ctrl+S)", command=self._on_accept).grid(row=1, column=0)
         ttk.Button(review, text="f 失败", command=self._on_flag).grid(row=1, column=1)
 
@@ -221,8 +242,101 @@ class PytranApp:
 
     # -- 控件 → 状态 ---------------------------------------------------------
     def _on_step(self, idx: int) -> None:
-        self.state.goto(idx)
+        if idx == 0:
+            self._choose_directory()
+        elif idx == 1:
+            self._import_rpy()
+        elif idx == 2:
+            self._start_translate()
+        elif idx == 3:
+            self.state.goto(3)
+            self._refresh_all()
+        elif idx == 4:
+            self._on_writeback()
+            return
         self._refresh_steps()
+
+    # -- 步骤真实功能 ---------------------------------------------------------
+    def _choose_directory(self) -> None:
+        """步骤 0：选择游戏目录（含 game/renpy 结构）或纯 rpy 文件。"""
+        from tkinter import filedialog, messagebox
+        game_dir = filedialog.askdirectory(
+            title="选择 Ren'Py 游戏根目录（含 game/ 的目录）",
+            initialdir=self.work_dir)
+        if game_dir:
+            self.project.game_root = game_dir
+            self.state.goto(1)
+            self._log(f"已选择游戏目录：{game_dir}")
+            self._log("点「导入」扫描 game/tl 下的 rpy 文件")
+            return
+        rpy = filedialog.askopenfilename(
+            title="或选择单个 .rpy 文件（纯文件模式）",
+            filetypes=[("Ren'Py 脚本", "*.rpy"), ("所有文件", "*.*")],
+            initialdir=self.work_dir)
+        if rpy:
+            self._pending_rpy = rpy
+            self.state.goto(1)
+            self._log(f"已选择 rpy 文件：{rpy}")
+            self._log("点「导入」开始解析")
+
+    def _import_rpy(self) -> None:
+        """步骤 1：扫描游戏 tl 目录或导入选中的 rpy → 解析入工程。"""
+        from tkinter import messagebox
+        parser = None
+        try:
+            from pytran.parser import RenpyParser
+            parser = RenpyParser()
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"解析器初始化失败：{exc}")
+            return
+        segs = []
+        files = []
+        game_root = self.project.game_root
+        if game_root:
+            tl = Path(game_root) / "game" / "tl"
+            pattern = tl if tl.is_dir() else Path(game_root) / "game"
+            for rpy in sorted(pattern.glob("**/*.rpy")):
+                rel = rpy.relative_to(Path(game_root) / "game").as_posix()
+                segs.extend(parser.parse_file(rpy, game_relpath=rel))
+                files.append((rel, rpy))
+            if not segs:
+                self._log(f"在 {pattern} 未找到 .rpy 文件；"
+                          "可先用「解包+反编译」生成，或配置 Ren'Py SDK 生成骨架")
+                return
+        elif getattr(self, "_pending_rpy", None):
+            rpy = Path(self._pending_rpy)
+            segs.extend(parser.parse_file(rpy, game_relpath=rpy.name))
+            files.append((rpy.name, rpy))
+        else:
+            messagebox.showinfo("导入", "请先在「选择目录」中指定游戏目录或 rpy 文件")
+            return
+        from pytran.models import GameFile
+        from pytran.project import build_project
+        import hashlib
+        gf = []
+        for rel, rpy in files:
+            gf.append(GameFile(name=rel, sha256=hashlib.sha256(
+                rpy.read_bytes()).hexdigest(), game_relpath=rel))
+        self.project = build_project(segs, files=gf,
+                                     game_root=str(game_root or ""))
+        self.state = type(self.state)(self.project)
+        self.state.goto(2)
+        from pytran.project import JsonProjectStore
+        JsonProjectStore().save(self.project, self.work_dir)
+        self._log(f"导入完成：{len(segs)} 段（skipped "
+                  f"{self.project.stats.skipped}）→ project.json 已保存")
+        self._log("点「翻译」开始（请确认已在 ⚙ 设置中填好 API Key）")
+
+    def _start_translate(self) -> None:
+        """步骤 2：启动后台翻译（引擎未就绪时引导设置）。"""
+        if not self._ensure_engine_ready():
+            return
+        if not self.state.has_segments:
+            from tkinter import messagebox
+            messagebox.showinfo("翻译", "工程为空：请先完成「选择目录」和「导入」")
+            return
+        self.state.goto(2)
+        self._translate_in_background()
 
     def _on_list_select(self, _evt) -> None:
         self.state._review_index = self._widgets["listbox"].curselection()[0] \
@@ -309,12 +423,14 @@ class PytranApp:
         if "translate" in self._widgets:
             pass  # 翻译按钮由 run 内事件驱动
 
-    def _log(self, message: str) -> None:
+    def _log(self, message: str, level: str = "info") -> None:
         box = self._widgets.get("log")
         if box is None:
             return
         box.config(state="normal")
-        box.insert("end", message + "\n")
+        tag = "warn" if level == "warn" else "info"
+        box.insert("end", message + "\n", tag)
+        box.tag_config("warn", foreground="#b03030")
         box.config(state="disabled")
 
 

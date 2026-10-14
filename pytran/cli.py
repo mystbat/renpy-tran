@@ -319,16 +319,12 @@ def cmd_ui(work_dir: Path) -> int:
     try:
         deps = build_deps(work_dir)
     except Exception as exc:  # noqa: BLE001 - 缺 Key/网络配置错误都不该挡住 GUI
-        logger.warning("provider 未就绪（%s）；GUI 以未配置模式启动，"
-                       "请在「⚙ 设置」中填写 API Key", exc)
+        # 提示由 GUI 日志区承担（_ensure_engine_ready / 设置对话框），不再刷 stderr
+        logger.debug("provider 未就绪：%s", exc)
         deps = build_deps(work_dir, allow_missing_provider=True)
     project = deps.store.load(work_dir)
     if not project.segments:
-        logger.warning(
-            "工程为空（未找到 %s）：可在 UI 中选择游戏目录 / 导入，"
-            "或在设置中填好 Key 后用 translate / game 命令开始",
-            work_dir / "project.json",
-        )
+        logger.info("工程为空（%s）：GUI 内可执行 选择目录 → 导入", work_dir)
     from pytran.ui import PytranApp
 
     PytranApp(project, deps=deps, work_dir=work_dir).run()
