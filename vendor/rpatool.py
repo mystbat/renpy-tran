@@ -26,7 +26,7 @@ import struct
 import sys
 import zlib
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple
 
 __all__ = ["RpaError", "extract", "create", "extract_archive"]
 
@@ -82,22 +82,19 @@ def _read_index_obfuscated(f, header_rest: bytes) -> Dict[str, List[Tuple[int, i
     if not isinstance(index, dict):
         raise RpaError("RPA index is not a mapping")
 
-    # Normalise entries: XOR-decode offsets when a key is present.
+    # Normalise entries to (offset, dlen) — official loader.py semantics:
+    #   index[k] = [(offset ^ key, dlen ^ key), ...]
+    # (field 2 is the *length*, not an end offset.)
     decoded: Dict[str, List[Tuple[int, int]]] = {}
     for name, entries in index.items():
         spans: List[Tuple[int, int]] = []
         for entry in entries:
             if key:
-                # Entry tuples are (start, end[, prefix...]) with XOR'd ints.
                 numbers = [v ^ key for v in entry if isinstance(v, int)]
                 if len(numbers) >= 2:
-                    start, end = numbers[0], numbers[1]
-                    spans.append((start, end - start))
+                    spans.append((numbers[0], numbers[1]))
                     continue
-            # Legacy/3-tuple with explicit prefix length.
-            if len(entry) >= 3 and isinstance(entry[2], int):
-                spans.append((entry[0], entry[2]))
-            elif len(entry) >= 2:
+            if len(entry) >= 2:
                 spans.append((entry[0], entry[1]))
         decoded[name] = spans
     return decoded
@@ -144,12 +141,18 @@ def _read_index(f) -> Dict[str, List[Tuple[int, int]]]:
     return _read_index_legacy_trailer(f)
 
 
-def extract_archive(rpa_path: Path, out_dir: Path) -> List[Path]:
+def extract_archive(
+    rpa_path: Path,
+    out_dir: Path,
+    progress: "Callable[[str, int, int], None] | None" = None,
+) -> List[Path]:
     """Extract every member of ``rpa_path`` into ``out_dir``.
 
-    Archived names use ``/`` separators; these are mapped to the OS separator
-    and parent directories are created as needed. Returns the list of written
-    file paths (top-level entries only, matching ``Unren.extract_rpa``).
+    ``progress(name, done, total)`` is invoked per member for UI progress
+    display. Archived names use ``/`` separators; these are mapped to the OS
+    separator and parent directories are created as needed. Returns the list
+    of written file paths (top-level entries only, matching
+    ``Unren.extract_rpa``).
     """
     rpa_path = Path(rpa_path)
     out_dir = Path(out_dir)
@@ -161,7 +164,10 @@ def extract_archive(rpa_path: Path, out_dir: Path) -> List[Path]:
 
         top_level: List[Path] = []
         seen_top: set[str] = set()
-        for name, parts in index.items():
+        total = len(index)
+        for done, (name, parts) in enumerate(index.items(), 1):
+            if progress is not None and (done % 50 == 0 or done == total):
+                progress(name, done, total)
             rel = name.replace("/", os.sep)
             dest = out_dir / rel
             top = rel.split(os.sep, 1)[0]

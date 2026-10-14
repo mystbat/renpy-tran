@@ -57,7 +57,15 @@ class PytranApp:
         elif name == "segment":
             self._refresh_review()
         elif name == "log":
-            self._log(data.get("message", ""))
+            self._log(data.get("message", ""), data.get("level", "info"))
+        elif name == "unpack_progress":
+            pb = self._widgets.get("progress")
+            if pb is not None:
+                total = data.get("total") or 1
+                pb.setValue(int(100.0 * data.get("done", 0) / total))
+            lbl = self._widgets.get("progress_label")
+            if lbl is not None:
+                lbl.config(text=data.get("text", ""))
 
     def _ensure_engine_ready(self) -> bool:
         if self.deps is not None and self.deps.engine is not None:
@@ -434,17 +442,32 @@ class PytranApp:
     def _on_unpack(self) -> None:
         if self.deps is None:
             self.deps = self._build_default_deps()
-        try:
-            self._log("解包 RPA 中……（大包可能需要一些时间）")
-            extracted = self.deps.unren.extract_rpa(self.project.game_root)
-            self._log(f"解包完成：{len(extracted)} 个文件")
-            self._log("反编译 rpyc 中……")
-            decompiled = self.deps.unren.decompile(self.project.game_root)
-            self._log(f"反编译完成：{len(decompiled)} 个 .rpy 生成")
-            self._log("点「导入」继续（解析刚生成的 rpy）")
-            self.state.goto(1)
-        except Exception as exc:
-            self._log(f"解包/反编译失败：{exc}", level="warn")
+
+        def on_progress(text: str, done: int, total: int) -> None:
+            # 后台线程 → 事件队列 → 主线程更新（§9 红线）
+            self.on_event("unpack_progress",
+                          {"text": f"解包 {text}", "done": done, "total": total})
+
+        def worker() -> None:
+            try:
+                self.on_event("log", {"message": "解包 RPA 中……"})
+                extracted = self.deps.unren.extract_rpa(
+                    self.project.game_root, progress=on_progress)
+                self.on_event("log", {"message": f"解包完成：{len(extracted)} 个文件"})
+                self.on_event("log", {"message": "反编译 rpyc 中……"})
+                decompiled = self.deps.unren.decompile(self.project.game_root)
+                self.on_event("log",
+                              {"message": f"反编译完成：{len(decompiled)} 个 .rpy 生成"})
+                self.on_event("log",
+                              {"message": "点「导入」继续（解析刚生成的 rpy）"})
+                self.state.goto(1)
+            except Exception as exc:  # noqa: BLE001
+                self.on_event("log", {"message": f"解包/反编译失败：{exc}",
+                                      "level": "warn"})
+            finally:
+                self.on_event("progress", {})
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _on_writeback(self) -> None:
         if self.deps is None:

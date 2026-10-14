@@ -20,7 +20,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from .config import Config
 from .interfaces import GameError, Project, Unren, WriteJournal
@@ -153,7 +153,12 @@ class UnrenImpl(Unren):
 
     # -- 解包 / 反编译 -------------------------------------------------------
 
-    def extract_rpa(self, game_root: Path, remove_rpa: bool = False) -> List[Path]:
+    def extract_rpa(
+        self,
+        game_root: Path,
+        remove_rpa: bool = False,
+        progress: "Callable[[str, int, int], None] | None" = None,
+    ) -> List[Path]:
         game_root = Path(game_root)
         if not self.is_renpy_game(game_root):
             raise GameError(f"不是 Ren'Py 游戏目录：{game_root}")
@@ -169,7 +174,13 @@ class UnrenImpl(Unren):
                 continue
             seen_rpa.add(rpa)
             logger.info("解包 RPA: %s", rpa.name)
-            out = rpatool.extract_archive(rpa, game_root / "game")
+            cb = None
+            if progress is not None:
+                cb = (lambda rpa_name: (
+                    lambda name, done, total: progress(
+                        f"{rpa_name}: {name}", done, total)
+                ))(rpa.name)
+            out = rpatool.extract_archive(rpa, game_root / "game", progress=cb)
             extracted.extend(out)
             if remove_rpa:
                 try:
