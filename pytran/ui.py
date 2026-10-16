@@ -78,8 +78,8 @@ class PytranApp:
         elif name == "refresh_all":
             self._refresh_all()
         elif name == "unpack_progress":
-            pb = self._widgets.get("progress")
-            lbl = self._widgets.get("progress_label")
+            pb = self._widgets.get("unpack_progress")
+            lbl = self._widgets.get("unpack_progress_label")
             total = data.get("total") or 0
             if pb is not None:
                 if total <= 0:
@@ -220,6 +220,14 @@ class PytranApp:
         self._widgets["btn_unpack"] = QPushButton("解包+反编译 (如果是未解包的 rpa/rpyc 游戏，点击此项)")
         self._widgets["btn_unpack"].clicked.connect(self._on_unpack)
         choose_layout.addWidget(self._widgets["btn_unpack"])
+        
+        # 解包/反编译专用进度条（本页内可见，不复用翻译页的进度条）
+        self._widgets["unpack_progress"] = QProgressBar()
+        self._widgets["unpack_progress"].setRange(0, 100)
+        self._widgets["unpack_progress"].setValue(0)
+        choose_layout.addWidget(self._widgets["unpack_progress"])
+        self._widgets["unpack_progress_label"] = QLabel("尚未解包。")
+        choose_layout.addWidget(self._widgets["unpack_progress_label"])
         self._widgets["stack"].addWidget(page_choose)
         
         # --- Page 1: Import ---
@@ -769,6 +777,7 @@ class PytranApp:
 
         def worker() -> None:
             try:
+                self.on_event("unpack_progress", {"text": "准备解包……", "done": 0, "total": 0})
                 self.on_event("log", {"message": "解包 RPA 中……"})
                 extracted = self.deps.unren.extract_rpa(
                     self.project.game_root, progress=on_progress)
@@ -777,10 +786,16 @@ class PytranApp:
                 if py_exe is not None:
                     self.on_event("log", {"message": f"使用 SDK 解释器：{py_exe}"})
                 self.on_event("log", {"message": "反编译 rpyc 中……"})
+                # 反编译阶段无逐步进度 → busy 指示器（total=0）
+                self.on_event("unpack_progress",
+                              {"text": "反编译 rpyc 中……", "done": 0, "total": 0})
                 decompiled = self.deps.unren.decompile(
                     self.project.game_root, python_exe=py_exe, sdk_root=sdk_root)
                 self.on_event("log",
                               {"message": f"反编译完成：{len(decompiled)} 个 .rpy 生成"})
+                self.on_event("unpack_progress",
+                              {"text": f"完成：解包 {len(extracted)} 个文件，反编译 {len(decompiled)} 个 .rpy",
+                               "done": 100, "total": 100})
                 self.on_event("log",
                               {"message": "点「导入」继续（解析刚生成的 rpy）"})
                 self.state.goto(1)
@@ -788,6 +803,8 @@ class PytranApp:
                 # 让目录状态标签、置灰规则、审校列表与磁盘实际状态同步。
                 self.on_event("refresh_all", {})
             except Exception as exc:  # noqa: BLE001
+                self.on_event("unpack_progress",
+                              {"text": f"失败：{exc}", "done": 0, "total": 0})
                 self.on_event("log", {"message": f"解包/反编译失败：{exc}",
                                       "level": "warn"})
             finally:
