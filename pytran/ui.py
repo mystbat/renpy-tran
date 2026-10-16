@@ -16,11 +16,26 @@ from typing import Callable, Optional
 from pytran.config import Config, TermProfile
 from pytran.models import Project
 from pytran.project import JsonProjectStore
-from pytran.ui_state import UiState
+from pytran.ui_state import REVIEW_FILTERS, UiState
 
 logger = logging.getLogger(__name__)
 
 EventCallback = Callable[[str, dict], None]
+
+# 审校页筛选项的中文标签。键必须与 UiState.REVIEW_FILTERS 完全一致，
+# 选项顺序直接取自 REVIEW_FILTERS（唯一真相源），避免两处清单漂移。
+REVIEW_FILTER_LABELS = {
+    "all": "全部",
+    "pending": "待翻译",
+    "translated": "已翻译",
+    "failed": "失败",
+    "keep_declared": "保留原文",
+    "reviewed": "已审校",
+}
+
+# 审校列表单次渲染的上限：`显示更多` 每次追加这么多条。
+# 海量大工程（十万级）一次创建全部 Qt 条目会让窗口假死（实测 13.5 万条约 11 秒）。
+REVIEW_PAGE_SIZE = 1000
 
 class PytranApp:
     def __init__(
@@ -39,6 +54,8 @@ class PytranApp:
         self._window = None
         self._widgets: dict = {}
         self._timer = None
+        # 审校列表当前已渲染的条目上限（随「显示更多」递增）
+        self._review_display_cap = REVIEW_PAGE_SIZE
 
     def on_event(self, name: str, data: dict) -> None:
         self._events.put((name, data or {}))
@@ -118,7 +135,8 @@ class PytranApp:
         from PyQt6.QtWidgets import (
             QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
             QPushButton, QProgressBar, QLabel, QListWidget, QTextEdit,
-            QSplitter, QStackedWidget, QTreeWidget, QTreeWidgetItem, QHeaderView
+            QSplitter, QStackedWidget, QTreeWidget, QTreeWidgetItem,
+            QHeaderView, QComboBox
         )
         from PyQt6.QtCore import QTimer, Qt
         
@@ -265,6 +283,30 @@ class PytranApp:
         # --- Page 3: Review ---
         page_review = QWidget()
         review_layout = QVBoxLayout(page_review)
+        
+        # 审校页工具条：状态筛选 + 条目计数 + 分页显示
+        review_bar = QHBoxLayout()
+        review_bar.addWidget(QLabel("筛选："))
+        self._widgets["review_filter"] = QComboBox()
+        # 选项由 UiState.REVIEW_FILTERS 驱动，先填充到位再接信号，
+        # 避免构造期 addItem 反复触发刷新。
+        for key in REVIEW_FILTERS:
+            self._widgets["review_filter"].addItem(REVIEW_FILTER_LABELS[key], key)
+        self._widgets["review_filter"].setCurrentIndex(0)
+        self._widgets["review_filter"].currentIndexChanged.connect(
+            self._on_review_filter_changed)
+        review_bar.addWidget(self._widgets["review_filter"])
+        
+        self._widgets["review_position"] = QLabel("")
+        review_bar.addWidget(self._widgets["review_position"])
+        review_bar.addStretch()
+        
+        self._widgets["btn_load_more"] = QPushButton("显示更多")
+        self._widgets["btn_load_more"].clicked.connect(self._on_load_more)
+        self._widgets["btn_load_more"].setEnabled(False)
+        review_bar.addWidget(self._widgets["btn_load_more"])
+        review_layout.addLayout(review_bar)
+        
         splitter = QSplitter(Qt.Orientation.Horizontal)
         
         self._widgets["listbox"] = QListWidget()
@@ -344,10 +386,37 @@ class PytranApp:
         window.show()
         app.exec()
 
+    def _on_review_filter_changed(self, _index: int) -> None:
+        """切换审校筛选条件：重置游标并回到首页显示量。"""
+        combo = self._widgets.get("review_filter")
+        if combo is None:
+            return
+        key = combo.currentData()
+        if key:
+            self.state.set_filter(str(key))
+        self._review_display_cap = REVIEW_PAGE_SIZE
+        self._refresh_review()
+
+    def _on_load_more(self) -> None:
+        """追加渲染下一批审校条目。"""
+        self._review_display_cap += REVIEW_PAGE_SIZE
+        self._refresh_review()
+
+    def _displayed_review_rows(self) -> int:
+        """当前列表里真实条目（不含尾部提示行）的行数。"""
+        lb = self._widgets.get("listbox")
+        if lb is None:
+            return 0
+        n = lb.count()
+        from PyQt6.QtCore import Qt
+        if n and not (lb.item(n - 1).flags() & Qt.ItemFlag.ItemIsSelectable):
+            return n - 1
+        return n
+
     def _navigate_list(self, delta: int) -> None:
         lb = self._widgets.get("listbox")
         if not lb: return
-        count = lb.count()
+        count = self._displayed_review_rows()
         if count == 0: return
         curr = lb.currentRow()
         next_row = curr + delta
@@ -861,12 +930,19 @@ class PytranApp:
         lb.clear()
         
         from PyQt6.QtGui import QColor, QBrush
+        from PyQt6.QtCore import Qt
         from PyQt6.QtWidgets import QListWidgetItem
         
         items = self.state.review_items()
-        # 对海量数据（如几万条）做视窗分批保护，默认展示前 1000 条，避免创建数万个 QListWidgetItem 导致 UI 无响应
-        max_display = 1000
-        for item in items[:max_display]:
+        total = len(items)
+        cap = max(REVIEW_PAGE_SIZE, int(self._review_display_cap))
+        shown = items[:cap]
+        
+        # 游标被筛选/分页裁剪时收回到已渲染范围内，避免选中尾部提示行
+        if shown and self.state._review_index >= len(shown):
+            self.state._review_index = len(shown) - 1
+
+        for item in shown:
             tag = item.status.name
             text = f"[{tag}] {item.source[:30]}"
             witem = QListWidgetItem(text)
@@ -879,16 +955,33 @@ class PytranApp:
                 
             lb.addItem(witem)
 
-        if len(items) > max_display:
-            hint_item = QListWidgetItem(f"…… 仅展示前 {max_display} 条（共 {len(items)} 条），可用筛选器缩小范围")
+        if total > cap:
+            hint_item = QListWidgetItem(
+                f"…… 仅渲染前 {cap} 条（当前筛选共 {total} 条）；"
+                f"可换筛选条件，或点「显示更多」继续加载")
             hint_item.setForeground(QBrush(QColor("#888888")))
+            # 提示行不可选中/不可导航，避免污染审校游标
+            hint_item.setFlags(Qt.ItemFlag.NoItemFlags)
             lb.addItem(hint_item)
             
         if lb.count() > 0:
-            idx = min(self.state._review_index, lb.count() - 1)
+            idx = min(self.state._review_index, max(len(shown) - 1, 0))
             lb.setCurrentRow(idx)
             
         lb.blockSignals(False)
+        
+        pos = self._widgets.get("review_position")
+        if pos is not None:
+            if total == 0:
+                pos.setText("当前筛选下没有条目")
+            else:
+                pos.setText(
+                    f"当前筛选 {total} 条，已渲染 {len(shown)} 条，"
+                    f"正在审校第 {self.state._review_index + 1} 条")
+        btn_more = self._widgets.get("btn_load_more")
+        if btn_more is not None:
+            btn_more.setEnabled(total > cap)
+        
         self._refresh_editor()
 
     def _refresh_editor(self) -> None:
