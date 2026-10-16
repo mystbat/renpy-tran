@@ -639,7 +639,7 @@ class PytranApp:
 
     def _import_rpy(self) -> None:
         # 全部导入：扫描候选清单并全部导入
-        all_files = self._hide_rpyc_with_rpy_present(self._get_discovered_rpy_files())
+        all_files = self._get_discovered_rpy_files()
         if not all_files:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.information(self._window, "导入", "未发现可供导入的 .rpy 文件，请先在「选择目录」中选择游戏或解包。")
@@ -658,27 +658,6 @@ class PytranApp:
             if p.is_file():
                 files = [p]
         return files
-
-    @staticmethod
-    def _hide_rpyc_with_rpy_present(paths: list[Path]) -> list[Path]:
-        """过滤掉「同名 .rpy 已存在」的 .rpyc 文件（用户要求：有 rpy 就不显示 rpyc）。
-
-        仅当传入列表里含 .rpyc 时生效；返回过滤后的列表（顺序不变）。
-        """
-        rpyc = [p for p in paths if p.suffix.lower() == ".rpyc"]
-        if not rpyc:
-            return paths
-        rpy_stems = {p.with_suffix(".rpy").as_posix().lower() for p in paths
-                     if p.suffix.lower() == ".rpy"}
-        # 也把「磁盘上已存在同名 .rpy」视为存在（解包后 renpy 生成的情况）
-        result = []
-        for p in paths:
-            if p.suffix.lower() == ".rpyc":
-                rpy = p.with_suffix(".rpy")
-                if rpy.as_posix().lower() in rpy_stems or rpy.exists():
-                    continue  # 有同名 .rpy → 隐藏此 .rpyc
-            result.append(p)
-        return result
 
     def _do_import_files(self, target_files: list[Path]) -> None:
         from PyQt6.QtWidgets import QMessageBox
@@ -880,12 +859,9 @@ class PytranApp:
 
         rpa_files = sorted(game.glob("*.rpa"))
         rpy_files = sorted(game.glob("**/*.rpy"))
-        # 已有同名 .rpy（同目录）的 .rpyc 隐藏——它已被 .rpy 取代，无需反编译。
-        rpy_set = {f.parent.as_posix().lower() + "|" + f.stem.lower() for f in rpy_files}
-        rpyc_files = [
-            f for f in sorted(game.glob("**/*.rpyc"))
-            if (f.parent.as_posix().lower() + "|" + f.stem.lower()) not in rpy_set
-        ]
+        rpyc_files = sorted(game.glob("**/*.rpyc"))
+        # .rpyc 只在「无任何 .rpy」时才有提示意义（游戏封包待解包）；
+        # 已有 .rpy 时它对翻译流程无意义，不显示。
 
         for f in rpa_files:
             rel = f.relative_to(game_root).as_posix()
@@ -893,11 +869,12 @@ class PytranApp:
             item.setForeground(0, QBrush(QColor("#d32f2f")))
             tree.addTopLevelItem(item)
 
-        for f in rpyc_files:
-            rel = f.relative_to(game_root).as_posix()
-            item = QTreeWidgetItem(["RPYC 字节码", rel, "需反编译（点击下方「解包+反编译」）"])
-            item.setForeground(0, QBrush(QColor("#e65100")))
-            tree.addTopLevelItem(item)
+        if not rpy_files:  # 无 .rpy 时才逐条列 rpyc（封包状态的诊断信息）
+            for f in rpyc_files:
+                rel = f.relative_to(game_root).as_posix()
+                item = QTreeWidgetItem(["RPYC 字节码", rel, "需反编译（点击下方「解包+反编译」）"])
+                item.setForeground(0, QBrush(QColor("#e65100")))
+                tree.addTopLevelItem(item)
 
         for f in rpy_files:
             rel = f.relative_to(game_root).as_posix()
@@ -926,7 +903,7 @@ class PytranApp:
         from PyQt6.QtGui import QColor, QBrush
 
         tree.clear()
-        discovered = self._hide_rpyc_with_rpy_present(self._get_discovered_rpy_files())
+        discovered = self._get_discovered_rpy_files()
         imported_files_set = {gf.name for gf in self.project.files}
 
         for p in discovered:
