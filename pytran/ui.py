@@ -879,8 +879,13 @@ class PytranApp:
             return
 
         rpa_files = sorted(game.glob("*.rpa"))
-        rpyc_files = sorted(game.glob("**/*.rpyc"))
         rpy_files = sorted(game.glob("**/*.rpy"))
+        # 已有同名 .rpy（同目录）的 .rpyc 隐藏——它已被 .rpy 取代，无需反编译。
+        rpy_set = {f.parent.as_posix().lower() + "|" + f.stem.lower() for f in rpy_files}
+        rpyc_files = [
+            f for f in sorted(game.glob("**/*.rpyc"))
+            if (f.parent.as_posix().lower() + "|" + f.stem.lower()) not in rpy_set
+        ]
 
         for f in rpa_files:
             rel = f.relative_to(game_root).as_posix()
