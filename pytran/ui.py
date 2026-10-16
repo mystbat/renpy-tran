@@ -75,6 +75,15 @@ class PytranApp:
             self._refresh_review()
         elif name == "log":
             self._log(data.get("message", ""), data.get("level", "info"))
+        elif name == "round":
+            # engine 每轮上报：翻译阶段无逐文件进度，用 busy 指示器 + 轮次文字
+            pb = self._widgets.get("progress")
+            if pb is not None:
+                pb.setRange(0, 0)
+            lbl = self._widgets.get("progress_label")
+            if lbl is not None:
+                lbl.setText(f"翻译第 {data.get('round', '?')} 轮……"
+                            f"（待译 {data.get('queue', '?')} 行）")
         elif name == "refresh_all":
             self._refresh_all()
         elif name == "unpack_progress":
@@ -574,8 +583,14 @@ class PytranApp:
                 self.project = Project(version=3, app="pytran",
                                        game_root=game_dir)
                 self.state = type(self.state)(self.project)
+                # 上一游戏的术语表/提示词 profile 不可带入新游戏（§7.2）
+                try:
+                    (self.work_dir / "profile.json").unlink(missing_ok=True)
+                    (self.work_dir / "project.json").unlink(missing_ok=True)
+                except OSError:
+                    pass
                 self._log(f"已切换游戏目录（{old_root or '无'} → {game_dir}），"
-                          "旧导入数据已清空")
+                          "旧导入数据与术语表已清空")
             self.project.game_root = game_dir
             JsonProjectStore().save(self.project, self.work_dir)
             self.state.goto(1)
