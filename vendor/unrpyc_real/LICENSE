@@ -21,27 +21,41 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 --------------------------------------------------------------------------------
-Vendored by pytran (task W4b) — see docs/adr/ADR-0008-*.md and vendor/README.md.
+Vendored by pytran — see docs/adr/ADR-0008-*.md and vendor/README.md.
 
-  Upstream source : CensoredUsername/unrpyc  (original author: Yuri K. Schlesner)
-  Fork/edited by  : F95Sam (UnRen-forall)
-  Vendored commit  : 44febb0   (2019-10-07)
-  Vendored files   : unrpyc.py, deobfuscate.py, decompiler/__init__.py,
-                     decompiler/{magic,astdump,codegen,screendecompiler,
-                                 sl2decompiler,testcasedecompiler,translate,util}.py
+  Upstream source : CensoredUsername/unrpyc
+                    (original author: Yuri K. Schlesner)
+                    Per-file headers additionally credit CensoredUsername and
+                    Jackmcbarn: "Copyright (c) 2012-2024 Yuri K. Schlesner,
+                    CensoredUsername, Jackmcbarn".
+  Upstream branch : master  (Unrpyc v2.x — Python 3 / Ren'Py 8 toolchain)
+  Vendored tag    : v2.0.4
+  Vendored commit : 3ae8334ed71a05535927dcc559663d3aca51215b
+  Vendored date   : 2026-02-23
+  Vendored files  : unrpyc.py, deobfuscate.py,
+                    decompiler/__init__.py,
+                    decompiler/{magic,astdump,atldecompiler,renpycompat,
+                                sl2decompiler,testcasedecompiler,translate,
+                                util}.py
 
-Three minimal, clearly-marked compatibility shims were added for the Ren'Py
-8.x / Python 3.12 toolchain (search the source for the comment "W4b compatibility"):
+  Note: the upstream module reports __version__ = 'v2.0.3' in its own header,
+  i.e. upstream did not bump this string for the v2.0.4 release. The vendored
+  tree is taken from the v2.0.4 tag regardless.
 
-  1. unrpyc.py  PyCode.__setstate__  — tolerate Ren'Py 8.x's longer code-state
-                                        tuple (slice trailing metadata).
-  2. decompiler/__init__.py          — `if getattr(ast, "hide", False)` guards a
-                                        python-block attribute added post-2019.
-  3. decompiler/magic.py FakePackageLoader — provide importlib.abc.find_spec /
-                                        create_module / exec_module so the
-                                        legacy PEP 302 meta-path loader keeps
-                                        working on Python 3.12+.
+Upstream compatibility notes:
 
-The upstream license and attribution above are preserved verbatim and
-unchanged; the shims only widen runtime compatibility and do not alter the
-upstream decompilation logic or license.
+  * Unrpyc v2 targets Ren'Py 8.x (and 6.18.0+ with --no-init-offset). Games
+    built by Ren'Py 7 or older need Unrpyc v1 (`legacy` branch, Python 2.7),
+    which is NOT vendored here.
+  * Unlike the previously vendored 2019 tree (commit 44febb0), Unrpyc v2 does
+    NOT require a real Ren'Py engine: `decompiler/renpycompat.py` installs a
+    fake `renpy` package via `magic.fake_package("renpy")` and reconstructs the
+    AST from pickles itself. It therefore runs inside the plain pytran
+    interpreter (Python 3.9+), and the old "must run in a subprocess holding a
+    real engine" constraint no longer applies.
+  * Requires Python 3.9 or newer.
+
+The upstream sources above are vendored verbatim from the v2.0.4 tag; the MIT
+license text is preserved unchanged. Files owned by this project rather than by
+upstream (`__init__.py`, `runner.py`) carry their own headers and are not part
+of the vendored upstream tree.

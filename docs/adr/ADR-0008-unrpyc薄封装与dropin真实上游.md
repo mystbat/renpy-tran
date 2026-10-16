@@ -1,7 +1,7 @@
 # ADR-0008：unrpyc 集成采用「薄封装 + drop-in 真实上游」策略
 
 - 日期：2026-10-09
-- 状态：已接受（W4b 已落地真实上游 drop-in：vendor/unrpyc_real/ 已 vendored 上游 commit 44febb0，并经子进程桥在真实 Ren'Py 引擎上完成真实 .rpyc 全链路解码验证）
+- 状态：已接受（已落地。vendored 上游经 v2.0.4 升级后不再需要子进程桥，见下方「2026-02 修订」）
 - 影响范围：W4 `vendor/unrpyc.py`、`pytran/unren.py` 反编译入口（§8.1 ②、§8.2）
 
 ## 背景
@@ -43,3 +43,64 @@
 - 真实游戏（非合成 rpyc）的反编译覆盖率取决于用户是否放置 `vendor/unrpyc_real/`；
   交付说明 §15.5 第 3 点已说明内置骨架覆盖率有限，需真实 SDK/unrpyc 才达 100%；
 - 升级真实上游时只需核对 LICENSE 与上游 commit hash 记入 `vendor/README.md`，不改 ADR。
+
+---
+
+## 2026-02 修订：vendored 上游升级至 Unrpyc v2.0.4
+
+### 背景
+
+W4b 落地时 vendored 的是上游 **2019-10-07 的 `44febb0`**（Ren'Py 7.x 时代）。
+在 Ren'Py 8.3.7 上暴露出三个已确认缺陷：
+
+1. **RPYC2 多 slot 处理错误。** `read_ast_from_file()` 把整个 slot **字典**
+   喂给 `zlib`（`codecs.decode(chunks, 'zlib')`）。按分支选择条件的不同，表现为
+   `TypeError: a bytes-like object is required, not 'dict'`，或——当引擎自身的
+   `read_rpyc_data` 已消耗部分流时——表现为用户实际看到的
+   `Error -5 while decompressing data: incomplete or truncated stream`。
+2. **`--try-harder` 在 Python 3 上 100% 失败。** `deobfuscate.py` 残留 Python 2 写法
+   （`e.message`、`ord()` 作用于 int、int 与 str 比较），37 个样本全部崩溃，
+   而交付说明 §⑦ 将其标为「✅ 支持」。
+3. **不支持 8.x AST。** 2019 代码不认识 8.x 的节点布局，SDK launcher 样本 37 个
+   中有 22 个抛 `AttributeError`（`Label` 无 `name`、`Signature` 无 `extrapos`、
+   `Style` 无 `take`、`PyExpr` 无 `linenumber` 等）。
+
+### 修订决策
+
+将 `vendor/unrpyc_real/` 的上游替换为 **CensoredUsername/unrpyc `master` 分支的
+`v2.0.4` 标签**（commit `3ae8334ed71a05535927dcc559663d3aca51215b`），
+取自上游仓库，非 fork。v2 明确 **只含 Python 3 实现**，专攻 Ren'Py 8.x
+（向下兼容到 6.18.0），与本项目的 3.13 工具链匹配。
+Ren'Py 7 及更早的游戏不在 v2 支持范围内（需上游 `legacy` 分支的 v1.x，未 vendored）。
+
+### 由此带来的架构变化：子进程桥不再是必需项
+
+这是本次修订最重要的一点。上游 v2 **不再 import 真实的 `renpy` 引擎**：
+`decompiler/renpycompat.py` 通过 `magic.fake_package("renpy")` 自建伪 `renpy`
+包，并用自己的兼容类从 pickle 流重建 AST。因此：
+
+- `decompile_file()` 可**直接在本项目解释器内运行**（仅要求 Python ≥ 3.9），
+  不再需要 §8.5 的子进程桥与真实的 Ren'Py SDK/解释器；
+- `_decompile_in_process()` 成为默认路径；**仅当调用方显式传入 `python_exe`**
+  （例如要用游戏自带的解释器解码）时才走子进程，且此时仍要求给出 `sdk_root`；
+- `runner.py` 的 `--sdk-root` 由必填改为选填，仅为兼容性保留。
+
+该变化同时消除了此前「游戏自带解释器 + 引擎路径」的部署耦合：过去若探测失败
+（或沙箱禁写 temp）即整链失败，如今不依赖外部解释器。
+
+### 验证结果
+
+| 样本 | 旧 44febb0 | 新 v2.0.4 |
+| --- | --- | --- |
+| 用户真实游戏 HOROS-pc（20 个 .rpyc） | 走错分支时 0/20 | **20/20**（1,918,420 字符） |
+| Ren'Py SDK launcher（37 个 .rpyc） | 15/37 | **36/37**（余 1 个 `testcases.rpyc`，上游 `Testcase.label` 已知问题） |
+| `--try-harder` | 0/37 全崩 | 全部可用 |
+
+### 兼容性 / 部署说明
+
+- v2 要求 **Python ≥ 3.9**；`_require_supported_python()` 会在旧解释器上给出明确报错。
+- 解码需要临时落地中间文件。优先考虑在 `dst.parent`（已存在的可写目录）就地暂存，**不新建目录**，
+  以适配「允许写文件但禁止 mkdir」的沙箱环境；不可写时才回退到
+  `tempfile.mkdtemp()`，并可用环境变量 `UNRPYC_WORK_DIR` 覆盖其根目录
+  （该变量此前只存在于注释中、并未实现，现已落实）。
+- Ren'Py 7 / 6.x 游戏请用上游 `legacy` 分支的 v1.x，本项目不 vendored。

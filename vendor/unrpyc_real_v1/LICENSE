@@ -1,0 +1,102 @@
+MIT License
+
+Copyright (c) 2012-2024 Yuri K. Schlesner, CensoredUsername, Jackmcbarn
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Several test cases are included in the testcases folder. These are taken from the ren'py project under the following MIT License:
+
+Copyright 2004-2024 Tom Rothamel <pytom@bishoujo.us>
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation files
+(the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of the Software,
+and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+codegen.py, included in this repository, is licensed under the 3-clause BSD license.
+
+Copyright (c) 2008, Armin Ronacher
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+- Redistributions of source code must retain the above copyright notice, this list of
+  conditions and the following disclaimer.
+- Redistributions in binary form must reproduce the above copyright notice, this list of
+  conditions and the following disclaimer in the documentation and/or other materials
+  provided with the distribution.
+- Neither the name of the <ORGANIZATION> nor the names of its contributors may be used to
+  endorse or promote products derived  from this software without specific prior written
+  permission.
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
+THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+--------------------------------------------------------------------------------
+Vendored by pytran — see docs/adr/ADR-0008-*.md and vendor/README.md.
+
+  Upstream source : CensoredUsername/unrpyc  (`legacy` line, Unrpyc v1.x)
+                    MIT: Yuri K. Schlesner, CensoredUsername, Jackmcbarn
+                    decompiler/codegen.py additionally under 3-clause BSD
+                    (Copyright (c) 2008, Armin Ronacher) — see above.
+  Upstream tag    : v1.3.2
+  Vendored commit : 13f7e0ec56a7134a5afc89d70f3e48823e715f3e
+  Vendored date   : 2024-08-17
+  Vendored files  : unrpyc.py, deobfuscate.py, decompiler/__init__.py,
+                    decompiler/{magic,astdump,atldecompiler,codegen,
+                                renpycompat,screendecompiler,sl2decompiler,
+                                testcasedecompiler,translate,util}.py
+
+  Purpose: the Ren'Py 7 / 6.x fallback. Unrpyc v1 targets Ren'Py 7.x and 6.x,
+  which Unrpyc v2 (vendored in vendor/unrpyc_real/) does not cover.
+
+  IMPORTANT runtime constraint: this version requires **Python 2.7**
+  (`unrpyc.py main()` raises unless `sys.version_info[:2] == (2, 7)`, and the
+  sources use Python 2 syntax such as `except Exception, e:`). It therefore
+  CANNOT run in the pytran interpreter (Python 3) and is only ever invoked in a
+  subprocess under a Python 2.7 interpreter — typically the one bundled by the
+  Ren'Py 7 game itself at `<game>/lib/windows-i686/python.exe`.
+
+  Note: like v2, this version fakes the `renpy` package itself
+  (`decompiler/renpycompat.py` -> `magic.fake_package("renpy")`), so it does
+  NOT need a real Ren'Py engine — only a Python 2.7 interpreter with a working
+  standard library.
+
+Upstream sources are vendored verbatim from the v1.3.2 tag; all license texts
+above are preserved unchanged. Files owned by this project (e.g. `__init__.py`
+if added) carry their own headers and are not part of the vendored upstream.

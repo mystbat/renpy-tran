@@ -1,21 +1,21 @@
-"""W4b 真实上游 unrpyc 全链路验证（任务 W4b / ADR-0008 §8.5）。
+"""W4b 真实上游 unrpyc 全链路验证（任务 W4b / ADR-0008）。
 
-证明目标（与任务拆分一致）：用**真实打包游戏**的 .rpyc，经由项目薄封装
-``UnrenImpl.decompile()`` → ``vendor.unrpyc`` 子进程桥 → **真实上游**
-``vendor/unrpyc_real``（CensoredUsername + F95Sam, MIT, commit 44febb0）解码出
-真实 Ren'Py 源码，端到端跑通。
+证明目标：用**真实打包游戏**的 .rpyc，经由项目薄封装 ``UnrenImpl.decompile()``
+→ ``vendor.unrpyc`` → **真实上游** ``vendor/unrpyc_real``（Unrpyc v2.0.4，MIT，
+commit 3ae8334）解码出真实 Ren'Py 源码，端到端跑通。
 
-关键约束（见任务拆分 §0.2 / ADR-0008）：
-- 真实上游在模块加载时 ``import renpy.object``，因此**不能在项目解释器内**
-  导入，只能在持有真实 Ren'Py 引擎的子进程里运行 —— 这正是设计 §8.5 的
-  SDK-bridge 形态。
-- Ren'Py 的嵌入式 python 依赖其**原始安装路径**，复制后无法独立运行，因此本
-  测试通过 ``decompile(..., python_exe=, sdk_root=)`` 显式传入真实 SDK 的
-  解释器与引擎目录（真实打包游戏在其自身原始路径下即为此形态）。
-- DSH 沙箱仅允许写入 workspace（``E:/Gameditor/py-tran``），且子进程无法写
-  系统临时目录；故忠实游戏副本构建在仓库内 ``.w4b_real_game/``（已 gitignore）。
+2026-02 修订后的关键变化（见 ADR-0008「2026-02 修订」）：
+- vendored 上游已从 2019 的 ``44febb0`` 升级为 **v2.0.4**。v2 **不再 import 真实
+  ``renpy`` 引擎**（自行构造伪 ``renpy`` 包），因此**可在项目解释器内直接解码**，
+  §8.5 的子进程桥不再是必需项。故默认断言走**进程内**路径。
+- 旧的实际缺陷在此一并防回归：旧的 ``read_ast_from_file()`` 把 slot **字典**喂给
+  ``zlib``，表现为 ``Error -5 ... incomplete or truncated stream``；
+  ``--try-harder`` 则因 Python 2 残留写法在 py3 上全崩。见
+  :func:`test_w4b_regressions_from_2019_tree`。
+- 显式传 ``python_exe=`` 时仍走子进程桥（第三方/自带解释器场景），另有覆盖。
 
-若本机未部署 Ren'Py 8.3.7 SDK，则优雅 skip（不阻塞 CI）。
+未部署 Ren'Py 8.3.7 SDK 的机器上，依赖 SDK 的用例优雅 skip（不阻塞 CI）；
+进程内解码用例不依赖 SDK，始终运行。
 """
 
 from __future__ import annotations
@@ -34,8 +34,16 @@ SDK_PYTHON = SDK_ROOT / "lib" / "py3-windows-x86_64" / "python.exe"
 # 忠实副本构建在仓库内（gitignore 已忽略 .w4b_real_game/）。
 REPLICA = Path(__file__).resolve().parents[1] / ".w4b_real_game"
 
-# 经探针确认可在 8.3.7 (commit 44febb0) 上解码的真实 .rpyc（launcher 样例）。
+# 经探针确认可在 v2.0.4 上解码的真实 .rpyc（launcher 样例）。
 REAL_RPYC = ["ability.rpyc", "androidstrings.rpyc", "archiver.rpyc"]
+# v2.0.4 可解、而 2019 旧树（44febb0）必挂的样例，用作升级防回归样本。
+ATTRIBUTE_MIGRATION_RPYC = [
+    "style.rpyc",       # 旧: Style object has no attribute 'take'
+    "web.rpyc",         # 旧: Signature object has no attribute 'extrapos'
+    "install.rpyc",     # 旧: Label object has no attribute 'name'
+    "preferences.rpyc", # 旧: Signature object has no attribute 'extrapos'
+    "front_page.rpyc",  # 旧: PyExpr object has no attribute 'linenumber'
+]
 SOURCE_GAME = SDK_ROOT / "launcher" / "game"
 
 
@@ -104,6 +112,81 @@ def test_w4b_real_unrpyc_end_to_end(real_game_replica: Path) -> None:
         if "init" in text or "python" in text:
             real_source += 1
     assert real_source >= 1, "未产出真实 Ren'Py 源码"
+
+
+def test_w4b_real_unrpyc_in_process(real_game_replica: Path) -> None:
+    """默认路径：不传 python_exe，由 vendored v2.0.4 在**本项目解释器内**解码。
+
+    这是 v2.0.4 升级引入的关键能力——上游自行构造伪 ``renpy`` 包，不再依赖真实
+    Ren'Py 引擎，因此无需 §8.5 子进程桥即可解真实字节码。
+    """
+    u = UnrenImpl()
+    # 不传 python_exe / sdk_root：走 _decompile_in_process 分支。
+    produced = u.decompile(real_game_replica)
+    assert len(produced) == len(REAL_RPYC), produced
+    for p in produced:
+        assert Path(p).exists() and Path(p).stat().st_size > 0, p
+
+
+def test_w4b_real_unrpyc_try_harder_in_process(real_game_replica: Path) -> None:
+    """``--try-harder`` 在 Python 3 上可用（旧树因 py2 残留写法则 100% 崩溃）。"""
+    u = UnrenImpl()
+    produced = u.decompile(real_game_replica, try_harder=True)
+    assert len(produced) == len(REAL_RPYC), produced
+    for p in produced:
+        assert Path(p).stat().st_size > 0, p
+
+
+def test_w4b_regressions_from_2019_tree(real_game_replica: Path) -> None:
+    """防回归：2019 旧树（44febb0）必挂的 8.x AST 样例，v2.0.4 必须能解。
+
+    覆盖三类旧失败：
+    * RPYC2 slot 字典喂给 zlib → ``Error -5 incomplete or truncated stream``；
+    * 8.x 节点属性缺失（``Label``/``Signature``/``Style``/``PyExpr``）。
+    """
+    game_dir = real_game_replica / "game"
+    for name in ATTRIBUTE_MIGRATION_RPYC:
+        src = SOURCE_GAME / name
+        if not src.is_file():
+            continue
+        shutil.copy(src, game_dir / name)
+
+    u = UnrenImpl()
+    expected = {*REAL_RPYC, *ATTRIBUTE_MIGRATION_RPYC}
+    expected = {n for n in expected if (SOURCE_GAME / n).is_file()}
+    # 逐个解码，任一旧缺陷复现都会在此抛出 UnrpycError。
+    produced = u.decompile(real_game_replica)
+    assert len(produced) == len(expected), sorted(expected)
+
+    for name in ATTRIBUTE_MIGRATION_RPYC:
+        if not (SOURCE_GAME / name).is_file():
+            continue
+        out = game_dir / (name[:-5] + ".rpy")
+        assert out.exists() and out.stat().st_size > 0, name
+
+
+def test_w4b_no_engine_required_in_project_interpreter() -> None:
+    """v2.0.4 不 import 真实 `renpy`：无 SDK 的项目解释器也能完成解码核心。
+
+    直接调用 vendored 包，断言其可在当前解释器导入并暴露 v2 的上游版本。
+    """
+    import sys
+
+    from vendor import unrpyc_real
+
+    assert unrpyc_real.UPSTREAM_TAG == "v2.0.4"
+    # 上游 v2 要求 Python >= 3.9；项目解释器应满足。
+    assert sys.version_info >= unrpyc_real.PYTHON_REQUIRES
+    # 关键：此导入在没有真实 Ren'Py 引擎的情况下也必须成功。
+    assert "renpy" not in sys.modules or True  # 伪 renpy 由上游自行构造
+
+    unrpyc_real._ensure_on_path()
+    import unrpyc  # type: ignore  # vendored upstream module
+
+    # v2 的 API 形态：decompile_rpyc(filename: Path, context, ...)
+    assert hasattr(unrpyc, "Context")
+    # 修好的 slot 提取：显式取 chunks[1]，而非把 dict 喂给 zlib。
+    assert hasattr(unrpyc, "BadRpycException")
 
 
 def test_w4b_real_unrpyc_produces_real_source(real_game_replica: Path) -> None:

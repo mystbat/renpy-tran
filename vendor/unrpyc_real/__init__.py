@@ -1,37 +1,58 @@
 #!/usr/bin/env python3
 """vendor.unrpyc_real — the REAL upstream unrpyc, vendored as auditable source.
 
-This package is the unmodified (save for three small compatibility shims,
-marked ``W4b compatibility``) upstream unrpyc decompiler:
+This package is the upstream unrpyc decompiler, vendored **unmodified** from a
+release tag (no local compatibility patches are needed any more):
 
-    Upstream:  CensoredUsername / unrpyc  (original, Yuri K. Schlesner, MIT)
-    Edit:      F95Sam / UnRen-forall fork
-    Commit:    44febb0  (2019-10-07)
+    Upstream:  CensoredUsername / unrpyc
+    Authors:   Yuri K. Schlesner, CensoredUsername, Jackmcbarn (per upstream
+               file headers)
+    Branch:    master  (Unrpyc v2.x — Python 3 / Ren'Py 8 toolchain)
+    Tag/Commit: v2.0.4 / 3ae8334ed71a05535927dcc559663d3aca51215b
+    Date:      2026-02-23
     License:   MIT  — see ``vendor/unrpyc_real/LICENSE``
 
 It decodes Ren'Py ``.rpyc`` / ``.rpymc`` bytecode back into editable ``.rpy``
-source. Because the upstream module does ``import renpy.object`` at import
-time, it **cannot** be imported into the pytran project interpreter (which has
-no Ren'Py engine). It must therefore run in a *subprocess* whose ``sys.path``
-includes a real Ren'Py installation (the design §8.5 SDK-bridge pattern).
+source.
 
-Two entry points are provided:
+Why v2 is a significant upgrade over the previously vendored 2019 tree
+(commit ``44febb0``):
 
-* :func:`decompile_file` — a thin, in-process shim used when the caller *is*
-  already running inside a Python that can import ``renpy`` (e.g. the Ren'Py
-  SDK's bundled interpreter). It inserts this package on ``sys.path`` and calls
-  the upstream ``decompile_rpyc`` API.
-* :mod:`vendor.unrpyc_real.runner` — a CLI wrapper spawned by
-  ``vendor.unrpyc`` so the project interpreter can drive the real decompiler
-  through a subprocess without importing ``renpy`` itself.
+* **No Ren'Py engine required.** v1 imported ``renpy.object`` at module load and
+  so could only run inside an interpreter holding a real Ren'Py engine, forcing
+  the §8.5 subprocess-bridge. v2 installs a *fake* ``renpy`` package itself
+  (``decompiler/renpycompat.py`` → ``magic.fake_package("renpy")``) and rebuild
+  the AST from the pickle stream with its own compatibility classes, so it runs
+  directly inside the plain pytran interpreter. It only needs Python ≥ 3.9.
+* **Actually supports Ren'Py 8.x ASTs.** v2 models the modern node layout
+  (``Label._name``, ``Signature.extrapos``, ``Style.take``,
+  ``PyExpr.linenumber``, ``renpy.astsupport`` …), which the 2019 tree could not
+  and which made it fail with ``AttributeError`` on many 8.x files.
+* **``--try-harder`` works on Python 3.** v1's obfuscation path used Python-2
+  idioms (``e.message``, ``ord()`` on ints, int-vs-str byte comparison) that
+  crashed on every file; v2's ``deobfuscate.py`` is Python 3 throughout.
+* **Correct RPYC2 slot handling.** v1 fed the whole slot *dict* to ``zlib``
+  (``codecs.decode(chunks, 'zlib')``), which surfaced as
+  ``TypeError: a bytes-like object is required, not 'dict'`` or — depending on
+  how much of the stream had been consumed — as
+  ``Error -5 while decompressing data: incomplete or truncated stream``.
+  v2 selects ``chunks[1]`` explicitly and raises a typed ``BadRpycException``
+  when the header is genuinely unusable.
+
+Entry points:
+
+* :func:`decompile_file` — in-process decode of one ``.rpyc`` into ``dst``.
+  Runs in the **current** interpreter (no subprocess needed).
+* :mod:`vendor.unrpyc_real.runner` — CLI wrapper retained for callers that still
+  want process isolation (e.g. to run under the game's own bundled Python).
 
 See ``vendor/README.md`` and ``docs/adr/ADR-0008-*.md`` for the rationale.
 """
 
 from __future__ import annotations
 
-import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -39,10 +60,14 @@ from typing import Optional
 # Vendored upstream identification (ADR-0005 / ADR-0008 attribution)
 # ---------------------------------------------------------------------------
 
-__version__ = "44febb0"  # upstream commit this vendored copy was taken from
-UPSTREAM_COMMIT = "44febb0"
-UPSTREAM_DATE = "2019-10-07"
+# Upstream tag this vendored copy was taken from.
+__version__ = "v2.0.4"
+UPSTREAM_COMMIT = "3ae8334ed71a05535927dcc559663d3aca51215b"
+UPSTREAM_TAG = "v2.0.4"
+UPSTREAM_DATE = "2026-02-23"
 UPSTREAM_LICENSE = "MIT"
+# Minimum python required by upstream v2 (see upstream unrpyc.py main()).
+PYTHON_REQUIRES = (3, 9)
 
 # Abs directory of this package; inserted on sys.path so the upstream
 # ``unrpyc.py`` / ``decompiler`` subpackage can be imported by relative name.
@@ -56,6 +81,81 @@ def _ensure_on_path() -> None:
         sys.path.insert(0, d)
 
 
+def _require_supported_python() -> None:
+    """Fail early and clearly if the interpreter is too old for upstream v2."""
+    if sys.version_info < PYTHON_REQUIRES:
+        raise RuntimeError(
+            "vendored unrpyc %s requires Python %d.%d or newer; "
+            "this interpreter is %d.%d.%d"
+            % (__version__, PYTHON_REQUIRES[0], PYTHON_REQUIRES[1],
+               sys.version_info[0], sys.version_info[1], sys.version_info[2])
+        )
+
+
+def _is_writable_dir(d: Path) -> bool:
+    """Cheap probe: can we create/overwrite a file in this existing directory?"""
+    try:
+        probe = d / ".unrpyc_write_probe"
+        probe.write_bytes(b"")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def _stage_for_decode(src_path: Path, dst_path: Path):
+    """Return ``(staged_source_path, temp_dir_or_None)`` for the decode.
+
+    The upstream writes ``<stem>.rpy`` beside its input. Preferred stage
+    location is ``dst.parent`` (an existing, writable directory), which avoids
+    creating any new directory — important under sandboxes that permit file
+    writes but deny ``mkdir``. Falls back to a temp scratch dir when
+    ``dst.parent`` is not writable (e.g. a read-only shipped game).
+
+    The staging name never collides with ``dst``: it carries an
+    ``.unrpyc_stage`` marker inside the stem (upstream turns ``<stem>.rpyc``
+    into ``<stem>.rpy``, so the ``.rpyc`` suffix is kept for extension
+    selection). Staging beside the destination is therefore safe even though
+    upstream writes its output next to its input.
+    """
+    # Staging name must NOT collide with dst or with upstream's sibling output:
+    # upstream turns <stem>.rpyc into <stem>.rpy, so we keep the .rpyc suffix
+    # (needed for extension selection) but mark the stem.
+    stage_name = "%s.unrpyc_stage%s" % (src_path.stem, src_path.suffix)
+    target = dst_path.parent / stage_name
+    if _is_writable_dir(dst_path.parent):
+        target.write_bytes(src_path.read_bytes())
+        return target, None
+
+    # Fallback: scratch dir under the OS temp root (or UNRPYC_WORK_DIR).
+    import os
+
+    base = os.environ.get("UNRPYC_WORK_DIR") or None
+    td = Path(tempfile.mkdtemp(prefix="unrpyc_work_", dir=base))
+    work = td / (src_path.stem + src_path.suffix)
+    work.write_bytes(src_path.read_bytes())
+    return work, td
+
+
+def _cleanup_staging(staged, produced_suffix=".rpy", td=None) -> None:
+    """Remove the staged copy, its produced artifact, and the temp dir."""
+    try:
+        Path(staged).unlink(missing_ok=True)  # type: ignore[call-arg]
+    except OSError:
+        pass
+    try:
+        Path(staged).with_suffix(produced_suffix).unlink(missing_ok=True)  # type: ignore[call-arg]
+    except OSError:
+        pass
+    if td is not None:
+        import shutil
+
+        try:
+            shutil.rmtree(td, ignore_errors=True)
+        except OSError:
+            pass
+
+
 def decompile_file(
     src: str,
     dst: str,
@@ -64,78 +164,77 @@ def decompile_file(
 ) -> Optional[str]:
     """In-process decompile of one ``.rpyc`` to ``dst``.
 
-    Only valid when the *current* interpreter can ``import renpy`` (e.g. the
-    Ren'Py SDK's bundled python). The upstream ``unrpyc`` writes its ``.rpy``
-    next to the source; shipped/SDK game dirs are often read-only, so we copy
-    the source ``.rpyc`` into a writable temp dir, decode there, and copy the
-    produced ``.rpy`` out to ``dst``.
+    Unlike the previously vendored 2019 upstream, this does **not** need a real
+    Ren'Py engine: upstream v2 reconstructs the AST itself and therefore runs
+    inside the ordinary pytran interpreter (Python ≥ 3.9).
+
+    The upstream writes its ``.rpy`` next to its input, so the source is staged
+    beside the destination (``dst.parent``) when that directory is writable, and
+    only falls back to a scratch directory under the OS temp root otherwise.
+    Staging next to ``dst`` avoids creating directories at all, which matters in
+    sandboxed environments where new directories are denied but file writes in
+    existing paths are allowed. Set ``UNRPYC_WORK_DIR`` to relocate the temp
+    fallback root.
 
     Returns the produced ``.rpy`` path, or ``None`` on failure.
     """
-    import shutil
-
+    _require_supported_python()
     _ensure_on_path()
-    import unrpyc  # type: ignore
+    import unrpyc  # type: ignore  # upstream module (vendored verbatim)
 
-    src = Path(src)
-    dst = Path(dst)
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    src_path = Path(src)
+    dst_path = Path(dst)
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Work in a per-job scratch dir under the OS temp root (NOT the game
-    # directory): the game dir may be read-only, may sit under a sandbox that
-    # denies new dirs, and parallel/nested job staging produced
-    # ``.unrpyc_real_work/.unrpyc_real_work`` conflicts (user-reported crash).
-    # The upstream writes its .rpy next to the scratch source; we then copy the
-    # result out to ``dst`` and remove the scratch dir.
-    import tempfile
-
-    # Scratch dir under the OS temp root (writable for the user running the
-    # game; never the read-only game dir). UNRPYC_WORK_DIR overrides for
-    # sandboxed/locked-down environments where the default temp root is denied.
-    td = Path(tempfile.mkdtemp(prefix="unrpyc_work_"))
-    work = td / "src.rpyc"
-    work.write_bytes(src.read_bytes())
-    produced = unrpyc.decompile_rpyc(
-        str(work),
-        overwrite=True,
-        init_offset=init_offset,
-        try_harder=try_harder,
-    )
-    result: Optional[str] = None
-    if produced:
-        produced_path = work.with_suffix(".rpy")
-        if produced_path.exists():
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            dst.write_bytes(produced_path.read_bytes())
-            result = str(dst)
-    # best-effort cleanup of the scratch dir
+    staged, td = _stage_for_decode(src_path, dst_path)
     try:
-        shutil.rmtree(td, ignore_errors=True)
-    except OSError:
-        pass
-    return result
+        # Upstream v2 API: decompile_rpyc(filename: Path, context, ...).
+        # Exceptions propagate to the caller (and are mirrored onto
+        # ``context.error``), so failures are never silently swallowed.
+        context = unrpyc.Context()
+        unrpyc.decompile_rpyc(
+            Path(staged),
+            context,
+            overwrite=True,
+            init_offset=init_offset,
+            try_harder=try_harder,
+        )
+        # Surface upstream's own recorded error even if it did not raise.
+        if context.error is not None:
+            raise context.error
 
-
+        produced_path = Path(staged).with_suffix(".rpy")
+        if not produced_path.exists():
+            return None
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+        dst_path.write_bytes(produced_path.read_bytes())
+        return str(dst_path)
+    finally:
+        _cleanup_staging(staged, produced_suffix=".rpy", td=td)
 
 
 def main(argv: Optional[list] = None) -> int:
-    """Console entry: ``python -m vendor.unrpyc_real src [src ...]``.
-
-    Each ``src`` is decoded next to itself (``<stem>.rpy``) using the upstream
-    CLI defaults. This is only usable from a python that can import ``renpy``.
-    """
+    """Console entry: ``python -m vendor.unrpyc_real src [src ...]``."""
     if argv is None:
         argv = sys.argv[1:]
+    _require_supported_python()
     _ensure_on_path()
-    import unrpyc  # type: ignore
+    import unrpyc  # type: ignore  # upstream module (vendored verbatim)
 
     if not argv:
         print("usage: python -m vendor.unrpyc_real file.rpyc [file.rpyc ...]")
         return 2
     ok = 0
     for a in argv:
-        if unrpyc.decompile_rpyc(str(a), overwrite=False, init_offset=True):
+        p = Path(a)
+        context = unrpyc.Context()
+        try:
+            unrpyc.decompile_rpyc(p, context, overwrite=False, init_offset=True)
+            if context.error is not None:
+                raise context.error
             ok += 1
+        except Exception as exc:  # noqa: BLE001 - CLI reports failures per file
+            print("error decompiling %s: %s: %s" % (a, type(exc).__name__, exc))
     return 0 if ok == len(argv) else 1
 
 

@@ -1,4 +1,4 @@
-# Copyright (c) 2014 CensoredUsername
+# Copyright (c) 2014-2024 CensoredUsername
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -25,17 +25,15 @@ import ast
 from operator import itemgetter
 from contextlib import contextmanager
 
-from .util import DecompilerBase, WordConcatenator, reconstruct_paraminfo, \
+from util import DecompilerBase, WordConcatenator, reconstruct_paraminfo, \
                  simple_expression_guard, split_logical_lines, Dispatcher
-from . import codegen
+import codegen
 
 # Main API
 
-def pprint(out_file, ast, indent_level=0, linenumber=1,
-           decompile_python=False,
-           skip_indent_until_write=False, printlock=None):
-    return SLDecompiler(out_file, printlock=printlock,
-                 decompile_python=decompile_python).dump(
+def pprint(out_file, ast, options,
+           indent_level=0, linenumber=1, skip_indent_until_write=False):
+    return SLDecompiler(out_file, options).dump(
                      ast, indent_level, linenumber, skip_indent_until_write)
 
 # implementation
@@ -49,10 +47,8 @@ class SLDecompiler(DecompilerBase):
     # what method to call for which statement
     dispatch = Dispatcher()
 
-    def __init__(self, out_file=None, decompile_python=False,
-                 indentation="    ", printlock=None):
-        super(SLDecompiler, self).__init__(out_file, indentation, printlock)
-        self.decompile_python = decompile_python
+    def __init__(self, out_file, options):
+        super(SLDecompiler, self).__init__(out_file, options)
         self.should_advance_to_line = True
         self.is_root = True
 
@@ -113,16 +109,16 @@ class SLDecompiler(DecompilerBase):
 
         keywords = {ast.code.location[1]: WordConcatenator(False, True)}
         for key in ('modal', 'zorder', 'variant', 'predict'):
-            value = getattr(ast, key)
+            value = getattr(ast, key, None)
             # Non-Unicode strings are default values rather than user-supplied
             # values, so we don't need to write them out.
-            if isinstance(value, str):
+            if isinstance(value, unicode):
                 if value.linenumber not in keywords:
                     keywords[value.linenumber] = WordConcatenator(False, True)
                 keywords[value.linenumber].append("%s %s" % (key, value))
         keywords = sorted([(k, v.join()) for k, v in keywords.items()],
                           key=itemgetter(0)) # so the first one is right
-        if self.decompile_python:
+        if self.options.decompile_python:
             self.print_keywords_and_nodes(keywords, None, True)
             with self.increase_indent():
                 self.indent()
@@ -220,7 +216,7 @@ class SLDecompiler(DecompilerBase):
         with self.increase_indent():
             for i in stuff_to_print:
                 # Nodes are lists. Keywords are ready-to-print strings.
-                if isinstance(i[1], list):
+                if type(i[1]) == list:
                     self.print_node(i[1][0], i[1][1:])
                 else:
                     self.advance_to_line(i[0])
@@ -392,26 +388,25 @@ class SLDecompiler(DecompilerBase):
                 self.write_lines(lines)
 
     def is_renpy_if(self, nodes):
-        return (len(nodes) == 1 and isinstance(nodes[0], ast.If)
-                and (nodes[0].body and self.parse_header(nodes[0].body[0]))
-                and (not nodes[0].orelse or self.is_renpy_if(nodes[0].orelse)
-                     or self.parse_header(nodes[0].orelse[0])))
+        return len(nodes) == 1 and isinstance(nodes[0], ast.If) and (
+            nodes[0].body and self.parse_header(nodes[0].body[0])) and (
+                not nodes[0].orelse or self.is_renpy_if(nodes[0].orelse) or
+                self.parse_header(nodes[0].orelse[0]))
 
     def is_renpy_for(self, nodes):
-        return (len(nodes) == 2 and isinstance(nodes[0], ast.Assign)
-                and len(nodes[0].targets) == 1
-                and isinstance(nodes[0].targets[0], ast.Name)
-                and re.match(r"_[0-9]+$", nodes[0].targets[0].id)
-                and isinstance(nodes[0].value, ast.Num)
-                and nodes[0].value.n == 0 and isinstance(nodes[1], ast.For)
-                and not nodes[1].orelse and nodes[1].body
-                and self.parse_header(nodes[1].body[0])
-                and isinstance(nodes[1].body[-1], ast.AugAssign)
-                and isinstance(nodes[1].body[-1].op, ast.Add)
-                and isinstance(nodes[1].body[-1].target, ast.Name)
-                and re.match(r"_[0-9]+$", nodes[1].body[-1].target.id)
-                and isinstance(nodes[1].body[-1].value, ast.Num)
-                and nodes[1].body[-1].value.n == 1)
+        return (len(nodes) == 2 and isinstance(nodes[0], ast.Assign) and
+            len(nodes[0].targets) == 1 and
+            isinstance(nodes[0].targets[0], ast.Name) and
+            re.match(r"_[0-9]+$", nodes[0].targets[0].id) and
+            isinstance(nodes[0].value, ast.Num) and nodes[0].value.n == 0 and
+            isinstance(nodes[1], ast.For) and not nodes[1].orelse and
+            nodes[1].body and self.parse_header(nodes[1].body[0]) and
+            isinstance(nodes[1].body[-1], ast.AugAssign) and
+            isinstance(nodes[1].body[-1].op, ast.Add) and
+            isinstance(nodes[1].body[-1].target, ast.Name) and
+            re.match(r"_[0-9]+$", nodes[1].body[-1].target.id) and
+            isinstance(nodes[1].body[-1].value, ast.Num) and
+            nodes[1].body[-1].value.n == 1)
 
     def strip_parens(self, text):
         if text and text[0] == '(' and text[-1] == ')':
@@ -597,7 +592,7 @@ class SLDecompiler(DecompilerBase):
                         self.write("has ")
                     self.skip_indent_until_write = True
                     self.print_nodes(block, 1, True)
-            except BadHasBlockException:
+            except BadHasBlockException as e:
                 self.rollback_state(state)
                 self.print_python(header, code)
             else:

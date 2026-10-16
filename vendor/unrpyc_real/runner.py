@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Subprocess worker for the REAL upstream unrpyc (design §8.5 SDK-bridge).
 
-This module is **spawned as a separate process** by ``vendor.unrpyc``. It is
-never imported into the pytran project interpreter, because the upstream
-``unrpyc`` does ``import renpy.object`` at module load and the project
-interpreter ships without a Ren'Py engine.
+This module can be spawned as a **separate process** by ``vendor.unrpyc`` when
+the caller wants process isolation — for example to decode under the game's own
+bundled Python. It is no longer strictly required: unlike the previously
+vendored 2019 upstream, unrpyc v2 does **not** import a real ``renpy`` engine
+(it installs a fake ``renpy`` package itself via
+``decompiler/renpycompat.py``), so :func:`vendor.unrpyc_real.decompile_file`
+can also be called directly in-process on Python ≥ 3.9.
 
-Instead, the project runs the game's *own* bundled Python (or any Python with a
-Ren'Py engine on its path) and points it here. This worker:
+The worker:
 
-1. Puts the Ren'Py engine (``--sdk-root``) on ``sys.path`` so ``import renpy``
-   succeeds.
+1. Puts the Ren'Py engine (``--sdk-root``) on ``sys.path`` **if given**, for
+   games whose nodes carry a customised pickle layout. Upstream v2 does not
+   need it, so the flag is optional now.
 2. Puts the project root on ``sys.path`` (self-located) so the vendored
    ``vendor.unrpyc_real`` package is importable.
 3. Decodes each ``.rpyc`` to ``.rpy`` via :func:`vendor.unrpyc_real.decompile_file`.
@@ -44,9 +47,11 @@ def _repo_root() -> Path:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Real unrpyc subprocess worker")
-    p.add_argument("--sdk-root", required=True,
-                   help="Directory containing the Ren'Py 'renpy/' engine "
-                        "(added to sys.path so 'import renpy' works).")
+    p.add_argument("--sdk-root", default=None, required=False,
+                   help="Optional directory containing a Ren'Py 'renpy/' "
+                        "engine (added to sys.path). Upstream v2 does not "
+                        "require a real engine; supply this only for games "
+                        "needing one.")
     p.add_argument("--try-harder", action="store_true",
                    help="Use the obfuscation-recovery path (upstream "
                         "--try-harder). Default off.")
@@ -85,10 +90,12 @@ def main(argv: List[str] | None = None) -> int:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False))
         return 2
 
-    # 1) Ren'Py engine on path so `import renpy` works
-    sdk_root = str(Path(args.sdk_root).resolve())
-    if sdk_root not in sys.path:
-        sys.path.insert(0, sdk_root)
+    # 1) Ren'Py engine on path, when one was supplied. Upstream v2 reconstructs
+    #    the AST itself and does not need a real engine, so this is optional.
+    if args.sdk_root:
+        sdk_root = str(Path(args.sdk_root).resolve())
+        if sdk_root not in sys.path:
+            sys.path.insert(0, sdk_root)
 
     # 2) project root so `import vendor.unrpyc_real` works
     root = str(_repo_root())

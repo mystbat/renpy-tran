@@ -206,19 +206,18 @@ class UnrenImpl(Unren):
         rpyc_files = sorted({*game_root.glob("game/**/*.rpyc")})
         if not rpyc_files:
             return []
-        # Real upstream unrpyc runs in a subprocess to a real Ren'Py interpreter
-        # (it imports renpy at load time; see vendor/unrpyc.py + ADR-0008 §8.5).
-        # Default to the game's own bundled python and engine dir; both args are
-        # additive overrides (used by tests / explicit callers).
-        if python_exe is None:
-            python_exe = self.detect_game_python(game_root)
-        if sdk_root is None:
-            sdk_root = self.detect_sdk_root(game_root)
+        # Since the v2.0.4 upgrade the vendored upstream **no longer imports a
+        # real Ren'Py engine** (it constructs a fake `renpy` package itself), so
+        # it decodes in this interpreter. We therefore no longer auto-detect the
+        # game's bundled python: doing so forced every real game down the
+        # subprocess path even though none was needed, and games lacking a
+        # usable bundled interpreter failed outright.
+        # The subprocess path is now opt-in via an explicit python_exe=.
         logger.info(
             "反编译 %d 个 rpyc（try_harder=%s, python=%s, sdk_root=%s）",
             len(rpyc_files),
             try_harder,
-            python_exe,
+            python_exe or "进程内（ vendored unrpyc v2，无需外部解释器）",
             sdk_root,
         )
         return unrpyc.decompile_files(
