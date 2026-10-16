@@ -556,6 +556,16 @@ class PytranApp:
             self._window, "选择 Ren'Py 游戏根目录（含 game/ 的目录）", initial_dir)
             
         if game_dir:
+            if self.project.segments or self.project.game_root != game_dir:
+                # 换了目录：旧工程数据（段列表/导入文件）全部作废，防止
+                # 旧游戏的可翻译行混进新游戏的审校列表。
+                from pytran.models import Project, ProjectStats
+                old_root = self.project.game_root
+                self.project = Project(version=3, app="pytran",
+                                       game_root=game_dir)
+                self.state = type(self.state)(self.project)
+                self._log(f"已切换游戏目录（{old_root or '无'} → {game_dir}），"
+                          "旧导入数据已清空")
             self.project.game_root = game_dir
             JsonProjectStore().save(self.project, self.work_dir)
             self.state.goto(1)
@@ -580,6 +590,11 @@ class PytranApp:
             self._window, "或选择单个 .rpy 文件（纯文件模式）", initial_dir, "Ren'Py 脚本 (*.rpy);;所有文件 (*.*)")
             
         if rpy:
+            if self.project.segments:
+                from pytran.models import Project, ProjectStats
+                self.project = Project(version=3, app="pytran")
+                self.state = type(self.state)(self.project)
+                self._log("已选择新文件：旧导入数据已清空")
             self._pending_rpy = rpy
             self.state.goto(1)
             self._log(f"已选择 rpy 文件：{rpy}")
