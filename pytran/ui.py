@@ -75,6 +75,8 @@ class PytranApp:
             self._refresh_review()
         elif name == "log":
             self._log(data.get("message", ""), data.get("level", "info"))
+        elif name == "refresh_all":
+            self._refresh_all()
         elif name == "unpack_progress":
             pb = self._widgets.get("progress")
             lbl = self._widgets.get("progress_label")
@@ -761,6 +763,9 @@ class PytranApp:
                 self.on_event("log",
                               {"message": "点「导入」继续（解析刚生成的 rpy）"})
                 self.state.goto(1)
+                # 解包/反编译在游戏目录里生成了新 .rpy——界面全局刷新一次，
+                # 让目录状态标签、置灰规则、审校列表与磁盘实际状态同步。
+                self.on_event("refresh_all", {})
             except Exception as exc:  # noqa: BLE001
                 self.on_event("log", {"message": f"解包/反编译失败：{exc}",
                                       "level": "warn"})
