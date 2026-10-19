@@ -596,7 +596,7 @@ class PytranApp:
             for c in cands:
                 row = table.rowCount()
                 table.insertRow(row)
-                it0 = QTableWidgetItem(c.source)
+                it0 = QTableWidgetItem(c.term)
                 it0.setBackground(Qt.GlobalColor.lightGray)  # 候选待填
                 table.setItem(row, 0, it0)
                 table.setItem(row, 1, QTableWidgetItem(f"(出现 {c.count} 次)"))
