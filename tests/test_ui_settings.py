@@ -78,8 +78,8 @@ def test_apply_settings_roundtrips_all_l483_fields(tmp_path: Path) -> None:
     assert reloaded.max_workers == 4
     assert reloaded.round_budget_cap == 8
     assert reloaded.temperature == 0.5
-    # 运行时字段不写文件、不破坏环境变量注入路径
-    assert reloaded.api_key == ""  # 文件里没 Key；运行时由环境变量提供
+    # ADR-0004 2026-10-13 修订：api_key 落盘本机 ini（重开 GUI 免重填），环境变量仍优先
+    assert reloaded.api_key == "sk-secret"
 
 
 def test_apply_settings_empty_numbers_keep_existing(tmp_path: Path) -> None:
