@@ -61,7 +61,7 @@ def test_apply_settings_roundtrips_all_l483_fields(tmp_path: Path) -> None:
     # 重新读取落盘结果（Key 应不入文件）
     on_disk = configparser.ConfigParser()
     on_disk.read(tmp_path / "config.ini", encoding="utf-8")
-    assert on_disk.get("API", "api_key", fallback="") == ""  # ADR-0004
+    assert on_disk.get("API", "api_key", fallback="") == "sk-secret"  # ADR-0004 2026-10-13 修订：api_key 落盘本机 ini  # ADR-0004
     assert on_disk.get("API", "url") == "https://api.example/v1"
     assert on_disk.get("Model", "model") == "gpt-x"
     assert on_disk.get("Model", "fallback_model") == "gpt-y"
