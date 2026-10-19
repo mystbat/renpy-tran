@@ -159,6 +159,59 @@ class PytranApp:
             profile.prompt_overrides.pop("system_append", None)
         profile.save(self.work_dir / self.state.project.term_profile)
 
+    @staticmethod
+    def _coerce_setting(attr: str, raw) -> object:
+        """按字段类型收敛对话框字符串；数值留空/非法返回 None（保留既有值）。"""
+        raw = (str(raw) if raw is not None else "").strip()
+        if attr in ("max_tokens", "max_workers", "round_budget_cap"):
+            if not raw:
+                return None
+            try:
+                return max(1, int(raw))  # 0/负数会崩线程池，钳到 >=1
+            except ValueError:
+                return None
+        if attr in ("temperature", "top_p"):
+            if not raw:
+                return None
+            try:
+                return float(raw)
+            except ValueError:
+                return None
+        return raw
+
+    def _apply_settings(self, values: dict) -> None:
+        """写回 config.ini（§9 L483 字段；ADR-0004：api_key 不落盘由 Config.save 保证）。
+
+        未配置模式（deps 为 None）下不构造 provider——写配置不需要网络依赖。
+        """
+        from pytran.cli import build_deps
+        cfg = (self.deps.config if self.deps is not None
+               else build_deps(self.work_dir, allow_missing_provider=True).config)
+        for attr, raw in values.items():
+            coerced = self._coerce_setting(attr, raw)
+            if coerced is None and attr in ("max_tokens", "temperature", "top_p",
+                                            "max_workers", "round_budget_cap"):
+                continue  # 数值留空/非法 → 保留既有值
+            setattr(cfg, attr, coerced)
+        cfg.save(self.work_dir)
+
+    def _validate_sdk(self, sdk_dir: str) -> "tuple[bool, str]":
+        """§8.5：SDK 目录校验与引擎版本探测（复用 SdkBridgeImpl.probe）。"""
+        if not sdk_dir:
+            return (False, "未填写 SDK 目录")
+        p = Path(sdk_dir)
+        markers = ("renpy.exe", "renpy.sh", "renpy.py")
+        if not p.is_dir() or not any((p / m).exists() for m in markers):
+            return (False, "目录无效：缺少 renpy 启动器（renpy.exe/sh/py）")
+        try:
+            from pytran.sdk_bridge import SdkBridgeImpl
+            version = SdkBridgeImpl().probe(p, Path(self.project.game_root or self.work_dir))
+        except Exception as exc:  # noqa: BLE001
+            return (True, f"SDK 有效（版本探测失败：{exc}）")
+        if version:
+            return (True, f"SDK 有效（引擎版本 {version}）")
+        return (True, "SDK 有效（版本未知，按 8.x 处理）")
+
     def _load_profile(self) -> TermProfile:
         return TermProfile.load(self.work_dir / self.state.project.term_profile)
 
