@@ -276,7 +276,7 @@ def test_e2e_atomic_save_no_ui(work_dir, profile):
     # project.json 确实被写出
     assert (work_dir / "project.json").exists()
     # 事件名合法集合
-    valid = {"progress", "log", "segment", "round"}
+    valid = {"progress", "log", "segment", "round", "chunk_done"}
     assert all(n in valid for (n, _d) in log)
     # 至少一次 segment 事件（翻译完成）+ 一次 progress done
     assert any(n == "segment" for (n, _d) in log)
