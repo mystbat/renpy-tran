@@ -727,15 +727,20 @@ class PytranApp:
             QMessageBox.warning(self._window, "导入失败", str(exc))
 
     def _choose_file(self) -> None:
-        """选择单个 .rpy 文件（纯文件模式），委托给目录选择的文件分支。"""
+        """选择 .rpy 文件（纯文件模式，支持多选）。"""
         from PyQt6.QtWidgets import QFileDialog
-        rpy, _ = QFileDialog.getOpenFileName(
-            self._window, "选择单个 .rpy 文件（纯文件模式）",
+        rpys, _ = QFileDialog.getOpenFileNames(
+            self._window, "选择 .rpy 文件（纯文件模式，可多选）",
             str(self.work_dir), "Ren'Py 脚本 (*.rpy);;所有文件 (*.*)")
-        if rpy:
-            self._pending_rpy = rpy
+        if rpys:
+            self._pending_rpy_list = rpys
+            self._pending_rpy = rpys[0]
             self.state.goto(1)
-            self._log(f"已选择 rpy 文件：{rpy}")
+            self._log(f"已选择 {len(rpys)} 个 rpy 文件：")
+            for r in rpys[:10]:
+                self._log(f"  {r}")
+            if len(rpys) > 10:
+                self._log(f"  … 共 {len(rpys)} 个")
             self._log("点「导入」开始解析")
 
     def _choose_directory(self) -> None:
@@ -829,9 +834,22 @@ class PytranApp:
             return
         self._do_import_files(selected_files)
 
+    def _selected_import_files(self) -> list[Path]:
+        """从导入页勾选树收集用户勾选的文件（无树时回退全部发现）。"""
+        tree = self._widgets.get("import_tree")
+        if tree is None:
+            return self._get_discovered_rpy_files()
+        from PyQt6.QtCore import Qt
+        picked: list[Path] = []
+        for i in range(tree.topLevelItemCount()):
+            it = tree.topLevelItem(i)
+            if it.checkState(0) == Qt.CheckState.Checked:
+                picked.append(Path(it.data(0, Qt.ItemDataRole.UserRole)))
+        return picked or self._get_discovered_rpy_files()
+
     def _import_rpy(self) -> None:
-        # 全部导入：扫描候选清单并全部导入
-        all_files = self._get_discovered_rpy_files()
+        # 按勾选树导入（用户可取消勾选实现部分导入）
+        all_files = self._selected_import_files()
         if not all_files:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.information(self._window, "导入", "未发现可供导入的 .rpy 文件，请先在「选择目录」中选择游戏或解包。")
@@ -845,6 +863,8 @@ class PytranApp:
             tl = Path(game_root) / "game" / "tl"
             pattern = tl if tl.is_dir() else Path(game_root) / "game"
             files = sorted(pattern.glob("**/*.rpy"))
+        elif getattr(self, "_pending_rpy_list", None):
+            files = [Path(x) for x in self._pending_rpy_list if Path(x).is_file()]
         elif getattr(self, "_pending_rpy", None):
             p = Path(self._pending_rpy)
             if p.is_file():

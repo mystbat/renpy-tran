@@ -81,7 +81,10 @@ class TranslationEngine:
             on_event("log", {"message": "no translatable segments; nothing to do"})
             return project
 
-        segmenter = Segmenter(context_lines=max(0, int(getattr(config, "context_lines", 3))))
+        segmenter = Segmenter(
+            max_lines=max(1, int(getattr(config, "block_lines", 30))),
+            context_lines=max(0, int(getattr(config, "context_lines", 3))))
+        self._stop_requested = False
         round_no = 0
         history: list[str] = []
         prev_key: Optional[str] = None
@@ -96,6 +99,9 @@ class TranslationEngine:
         on_event("progress", {"started": True, "queue_size": len(queue)})
 
         while queue:
+            if self._stop_requested:
+                on_event("log", {"message": "翻译已被用户停止"})
+                break
             round_no += 1
             # (1) 轮数硬上限：无条件终止线，先于一切检测判定（§5.3）
             if round_no > cap:
@@ -173,6 +179,10 @@ class TranslationEngine:
 
         return project
 
+    def stop(self) -> None:
+        """协作式中断：请求停止翻译（当前 in-flight 的块会完成，后续块跳过）。"""
+        self._stop_requested = True
+
     # -- 单轮翻译 -------------------------------------------------------------
     def _translate_round(
         self,
@@ -212,12 +222,20 @@ class TranslationEngine:
                 )
                 futures.append((fut, lines))
                 sent += len(lines)
+            done_count = 0
             for fut, lines in futures:
+                if self._stop_requested:
+                    on_event("log", {"message": "翻译已被用户停止（剩余块跳过）"})
+                    break
+                done_count += 1
                 try:
                     result = fut.result()
                 except Exception:  # 网络层耗尽 / 协议不可解析（ProviderError/ProtocolError）
                     logger.exception("translate_batch raised; marking requested rows missing")
                     result = {}
+                on_event("chunk_done",
+                         {"done": done_count, "total": len(futures),
+                          "rows": len(lines)})
                 declared_uids.extend(
                     self._apply_result(
                         seg_map, profile, lines, result, allow_keep_declare, on_event,
