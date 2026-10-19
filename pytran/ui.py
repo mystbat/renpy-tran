@@ -142,10 +142,10 @@ class PytranApp:
         """把编辑后的术语/豁免写回 profile.json（ADR-0004 无 Key 涉及）。"""
         from pytran.terms import rows_to_terms
         profile = self._load_profile()
-        merged = rows_to_terms([(k, v) for k, v in terms_map.items()],
-                               profile.terms)
+        # rows_to_terms(rows) -> (terms, auto_exempt)：空译名英文行自动进豁免
+        merged, auto_exempt = rows_to_terms(list(terms_map.items()))
         profile.terms = merged
-        for ex in exempt_add:
+        for ex in list(exempt_add) + auto_exempt:
             if ex not in profile.exempt_english:
                 profile.exempt_english.append(ex)
         profile.save(self.work_dir / self.state.project.term_profile)

@@ -119,17 +119,13 @@ class Config:
         return cfg
 
     def save(self, work_dir: Path | str | None = None) -> None:
-        """写回 config.ini（api_key 除外——它只来自环境变量或既有文件，避免明文扩散）。"""
+        """写回 config.ini（含 api_key——文件在 .gitignore，红线是'不入 git'而非'不入本机配置'）。"""
         work = Path(work_dir) if work_dir else Path(self.work_dir)
         ini_path = work / DEFAULT_CONFIG_NAME
         cp = configparser.ConfigParser()
         if ini_path.exists():
             cp.read(ini_path, encoding="utf-8")
         for (section, option), attr in _INI_SECTION_MAP.items():
-            if attr == "api_key":
-                # ADR-0004：api_key 永不回写 ini（运行时值来自环境变量）；
-                # ini 中用户手工放置的 key 保持原样，不做任何修改。
-                continue
             if not cp.has_section(section):
                 cp.add_section(section)
             cp.set(section, option, str(getattr(self, attr)))
