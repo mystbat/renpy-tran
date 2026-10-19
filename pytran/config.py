@@ -36,6 +36,7 @@ keep_declare_min_total = 20
 
 [Game]
 language = chinese
+context_lines = 3
 renpy_sdk_dir =
 """
 
@@ -55,6 +56,7 @@ _INI_SECTION_MAP: dict[tuple[str, str], str] = {
     ("Engine", "keep_declare_min_batch"): "keep_declare_min_batch",
     ("Engine", "keep_declare_min_total"): "keep_declare_min_total",
     ("Game", "language"): "language",
+    ("Game", "context_lines"): "context_lines",
     ("Game", "renpy_sdk_dir"): "renpy_sdk_dir",
 }
 
@@ -77,6 +79,7 @@ class Config:
     keep_declare_rate_limit: float = 0.15  # §5.4 申报率阈值（ADR-0006 双口径）
     keep_declare_min_batch: int = 5      # §5.4 单批降级的最小样本量（ADR-0006）
     keep_declare_min_total: int = 20     # §5.4 累计闸的最小样本量（ADR-0006）
+    context_lines: int = 3               # §4.1 前文参考行数（0=关闭）
     language: str = "chinese"            # tl 目录语言名（§8.3）
     renpy_sdk_dir: str = ""              # §8.5；空 = 未配置
     profile_path: str = "profile.json"   # §7.2
@@ -134,7 +137,7 @@ class Config:
 
     def _coerce_types(self) -> None:
         for int_attr in ("max_tokens", "max_workers", "max_retry_rounds", "round_budget_cap",
-                         "keep_declare_min_batch", "keep_declare_min_total"):
+                         "keep_declare_min_batch", "keep_declare_min_total", "context_lines"):
             try:
                 setattr(self, int_attr, int(getattr(self, int_attr)))
             except (TypeError, ValueError):

@@ -81,7 +81,7 @@ class TranslationEngine:
             on_event("log", {"message": "no translatable segments; nothing to do"})
             return project
 
-        segmenter = Segmenter()
+        segmenter = Segmenter(context_lines=max(0, int(getattr(config, "context_lines", 3))))
         round_no = 0
         history: list[str] = []
         prev_key: Optional[str] = None

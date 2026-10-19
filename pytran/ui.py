@@ -538,11 +538,19 @@ class PytranApp:
         page_general = QWidget()
         form = QFormLayout(page_general)
         fields = [
-            ("API Key（存环境变量持久化请用系统设置）", "api_key", True),
+            ("API Key（保存后写入本机 config.ini，不进 git）", "api_key", True),
             ("模型地址 (URL)", "api_url", False),
             ("模型名称", "model", False),
+            ("回退模型 (可选，漏翻重试时切换)", "fallback_model", False),
+            ("max_tokens（单次请求上限）", "max_tokens", False),
+            ("temperature（0~1，越低越稳定）", "temperature", False),
+            ("top_p", "top_p", False),
+            ("并发数 (max_workers)", "max_workers", False),
+            ("请求超时秒 (timeout)", "timeout", False),
+            ("重译轮上限 (max_retry_rounds，≤5)", "max_retry_rounds", False),
             ("Ren'Py SDK 目录（可选，生成 tl 骨架）", "renpy_sdk_dir", False),
             ("目标语言", "language", False),
+            ("前文参考行数 (context_lines，0=关闭)", "context_lines", False),
         ]
         entries = {}
         for label, attr, secret in fields:

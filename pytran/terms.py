@@ -66,13 +66,30 @@ class Candidate:
         )
 
 
+_STRINGS_MAX_LEN = 24   # 整句候选的最大长度（更长的整句做术语无意义）
+
+
 def _strings_candidates(sources: Iterable[str]) -> Counter:
-    """``kind="strings"`` 段：整条 source 多为角色名/短语，全条计入（§4）。"""
+    """``kind="strings"`` 段候选。
+
+    DECISION(§4 改进，用户实测反馈"抽出来几乎没用")：
+    - 整条 source 仅当长度 <= 40 字符时计入（短标题/角色名短语才有
+      "整体翻译一致"的价值；长句做术语只会浪费 token 并误导模型）；
+    - 同时对 source 做词组抽取（复用对白块逻辑），高频人名/专名
+      不会被整句淹没。
+    """
     counts: Counter = Counter()
     for src in sources:
         s = (src or "").strip()
-        if s:
+        if not s:
+            continue
+        if len(s) <= _STRINGS_MAX_LEN:
             counts[s] += 1
+        counts.update(_dialogue_candidates([s]))
+    # 整句候选要求出现 >=2 次（单次出现的句子做术语无意义；
+    # 高频短句才是需要整体翻译一致的对象）
+    return Counter({k: v for k, v in counts.items()
+                    if not (len(k) > 12 and v < 2)})
     return counts
 
 
