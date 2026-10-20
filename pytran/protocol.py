@@ -289,6 +289,44 @@ def _decode_escapes(text: str) -> str:
     return "".join(out)
 
 
+def _parse_json_array(raw: str) -> "list[tuple[int, str, object]] | None":
+    """第 0 层：整体 JSON 数组解析。
+
+    部分模型把 JSONL 写成「多行展开的 JSON 数组」（对象间有逗号、对象内部
+    换行缩进）——逐行解析全部失败，但整体是合法 JSON。此层在逐行之前尝试，
+    成功则整批回收，避免整批 ProtocolError（用户实测 2026-10-20）。
+    只接受「数组且元素为含 i/t 的对象」；其余返回 None 走逐行路径。
+    """
+    import json
+    stripped = raw.strip()
+    if not stripped.startswith("["):
+        # 模型常见变体：逗号分隔的对象但无 [ ] 包裹 → 包上再试
+        if stripped.startswith("{") and stripped.endswith("}"):
+            stripped = "[" + stripped + "]"
+        else:
+            return None
+    try:
+        arr = json.loads(stripped)
+    except (ValueError, TypeError):
+        # 容忍数组末尾多余逗号: "[...},]" → 去掉再试
+        import re as _re
+        cleaned = _re.sub(r",\s*\]", "]", stripped)
+        try:
+            arr = json.loads(cleaned)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(arr, list):
+        return None
+    out: list[tuple[int, str, object]] = []
+    for obj in arr:
+        if isinstance(obj, dict) and "i" in obj and "t" in obj:
+            try:
+                out.append((int(obj["i"]), obj["t"], obj.get("k", False)))
+            except (TypeError, ValueError):
+                continue
+    return out or None
+
+
 def _parse_one_line(line: str) -> tuple[int, str, object] | None:
     """三层解析单行，返回 `(uid, text, raw_k)`；三层都失败返回 None。"""
     # a) json.loads（最严格，结构完整时优先）
@@ -358,12 +396,19 @@ def parse_response(
 
     parsed: list[tuple[int, str, object]] = []
     unparsed: list[str] = []
-    for line in _strip_fence_lines(raw):
-        item = _parse_one_line(line)
-        if item is None:
-            unparsed.append(line)
-        else:
-            parsed.append(item)
+
+    # 第 0 层：整体 JSON 数组（用户实测 2026-10-20：部分模型输出多行展开数组）
+    layer0 = _parse_json_array(raw)
+    if layer0:
+        parsed = layer0
+
+    if not parsed:
+        for line in _strip_fence_lines(raw):
+            item = _parse_one_line(line)
+            if item is None:
+                unparsed.append(line)
+            else:
+                parsed.append(item)
 
     if not parsed:
         raise ProtocolError(f"响应中没有任何可解析的编号行（原始响应前 200 字符：{raw[:200]!r}）")
