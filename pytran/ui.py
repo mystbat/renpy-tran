@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import re
 import threading
 from pathlib import Path
 from typing import Callable, Optional
@@ -37,6 +38,25 @@ REVIEW_FILTER_LABELS = {
 # 海量大工程（十万级）一次创建全部 Qt 条目会让窗口假死（实测 13.5 万条约 11 秒）。
 REVIEW_PAGE_SIZE = 1000
 
+# 设置对话框中的数值型字段（``_coerce_setting`` 与 ``_apply_settings`` 共用
+# 同一份清单）：留空或非法时保留既有值，不会被清空。
+# 新增数值字段必须同时登记到这里与 ``_coerce_setting`` 的类型分支，
+# 否则字符串会直达 Config 并传给下游（openai SDK 的 timeout /
+# Segmenter 的 context_lines 等）。
+_NUMERIC_ATTRS = (
+    "max_tokens", "max_workers", "round_budget_cap", "max_retry_rounds",
+    "context_lines", "block_lines", "keep_declare_min_batch",
+    "keep_declare_min_total", "temperature", "top_p", "timeout",
+    "keep_declare_rate_limit",
+)
+
+# R2：翻译页「最新译文」预览面板单次保留的最大条数。
+# 十万级长跑时若无限追加，QListWidget 会重现启动假死问题
+# （实测 13.5 万条约 11 秒，见 UI-交付说明 §2）。200 条足够
+# 用户判断「译文风格/术语是否如预期」，又不会拖慢渲染。
+_PREVIEW_MAX_ROWS = 200
+
+
 class PytranApp:
     def __init__(
         self,
@@ -54,8 +74,22 @@ class PytranApp:
         self._window = None
         self._widgets: dict = {}
         self._timer = None
+        # 最近一次打开的设置对话框（无头测试驱动用；真实 GUI 不使用）
+        self._settings_dialog = None
         # 审校列表当前已渲染的条目上限（随「显示更多」递增）
         self._review_display_cap = REVIEW_PAGE_SIZE
+        # 翻译运行态（§9：后台线程跑，UI 反映 busy 态）
+        self._translating = False
+        # 本次会话的 token 预算上限（§15.3；None = 不限制，不落盘）
+        self._budget_max: Optional[int] = None
+        # 辅助补丁勾选框（§8.1/§8.4；run() 里填充）
+        self._patch_boxes: dict = {}
+        # R2 译文预览：是否暂停自动滚动（用户想定住某条细看时用）
+        self._preview_paused = False
+        # R2 译文预览：本次会话已入列的条数（用于计数标签）
+        self._preview_seen = 0
+        # R1 试译行数（记住上次选择，避免每次重填）
+        self._trial_lines: Optional[int] = None
 
     def on_event(self, name: str, data: dict) -> None:
         self._events.put((name, data or {}))
@@ -72,20 +106,57 @@ class PytranApp:
         if name == "progress":
             self._refresh_progress()
         elif name == "segment":
+            # R2：每完成一行就即时入预览面板——用户不必切到审校页
+            # 也能看到「已译内容」，确认翻译如预期进行（问题清单 R2）。
+            self._on_segment_event(data)
             self._refresh_review()
         elif name == "log":
             self._log(data.get("message", ""), data.get("level", "info"))
         elif name == "round":
-            # engine 每轮上报：翻译阶段无逐文件进度，用 busy 指示器 + 轮次文字
-            pb = self._widgets.get("progress")
-            if pb is not None:
-                pb.setRange(0, 0)
+            # engine 每轮上报：显示轮次与待译行数。
+            # 注意：**不**把进度条打成 busy（setRange(0,0)）——那会让
+            # _refresh_progress 的 setValue 永久失效，百分比再也不显示
+            # （问题清单 C1）。是否 indeterminate 由 _set_translate_busy 单独控制。
+            self._set_translate_busy(True)
             lbl = self._widgets.get("progress_label")
             if lbl is not None:
                 lbl.setText(f"翻译第 {data.get('round', '?')} 轮……"
                             f"（待译 {data.get('queue', '?')} 行）")
+        elif name == "chunk_done":
+            # 9ee271f 新增：块级进度。引擎每完成一个块上报一次。
+            # 翻译阶段无逐文件进度，但块数百分比足以反映推进（§9 布局图）。
+            self._set_translate_busy(False)
+            pb = self._widgets.get("progress")
+            done, total = data.get("done", 0), data.get("total", 0) or 0
+            if pb is not None and total > 0:
+                pb.setValue(int(100.0 * done / total))
+            lbl = self._widgets.get("progress_label")
+            if lbl is not None:
+                extra = f"，本块 {data.get('rows', '?')} 行" if data.get("rows") else ""
+                lbl.setText(f"翻译中：块 {done}/{total}{extra}")
         elif name == "refresh_all":
             self._refresh_all()
+        elif name == "goto_step":
+            # 后台线程请求切页（§9：只有主线程能改 UI 状态）。
+            # 翻译完成后由 worker 发出，避免 worker 直接写 state.current_step。
+            step = data.get("step", 3)
+            if isinstance(step, int) and 0 <= step <= 4:
+                self.state.goto(step)
+                self._refresh_steps()
+        elif name == "translate_finished":
+            self._translating = False
+            self._refresh_translate_controls()
+        elif name == "translate_stopped":
+            # N4：停止终态——让用户明确知道「已停」以及停时的进度快照，
+            # 能区分「已排停，正在等当前块跑完」与「按钮没反应」。
+            self._translating = False
+            self._refresh_translate_controls()
+            self._refresh_progress()
+            processed = data.get("processed", "?")
+            remaining = data.get("remaining", "?")
+            lbl = self._widgets.get("progress_label")
+            if lbl is not None:
+                lbl.setText(f"已停止：本轮已发 {processed} 行，剩余 {remaining} 行未译")
         elif name == "unpack_progress":
             pb = self._widgets.get("unpack_progress")
             lbl = self._widgets.get("unpack_progress_label")
@@ -98,6 +169,23 @@ class PytranApp:
                     pb.setValue(int(100.0 * data.get("done", 0) / total))
             if lbl is not None:
                 lbl.setText(data.get("text", ""))
+
+    def _set_translate_busy(self, busy: bool) -> None:
+        """切换翻译进度条的 indeterminate 模式。
+
+        ``setRange(0, 0)`` 会让 setValue 永久失效，因此：
+        * 需要 indeterminate 时才切到 (0, 0)；
+        * 恢复时必须显式 ``setRange(0, 100)``，否则百分比永远回不来（C1）。
+        """
+        pb = self._widgets.get("progress")
+        if pb is None:
+            return
+        if busy:
+            if pb.maximum() != 0 or pb.minimum() != 0:
+                pb.setRange(0, 0)
+        else:
+            if pb.maximum() != 100:
+                pb.setRange(0, 100)
 
     def _ensure_engine_ready(self) -> bool:
         if self.deps is not None and self.deps.engine is not None:
@@ -113,30 +201,55 @@ class PytranApp:
             return False
         return True
 
-    def _translate_in_background(self) -> None:
+    def _translate_in_background(
+        self, only_uids: Optional[set] = None, *, auto_goto: bool = True
+    ) -> None:
+        """后台线程跑翻译。``only_uids`` 非空时只处理这些行（§6.5 单行/失败重译）。
+
+        ``auto_goto=False`` 时完成后**不切页**——用于 R1 试译：
+        试译的目的是让人回翻译页看预览面板的结果，不是催他进审校页。
+
+        §9 红线：worker 只通过 ``on_event`` 往队列发事件，
+        **不直接改 UI 状态**——切页改为发 ``goto_step`` 事件，由主线程消费。
+        """
         if not self._ensure_engine_ready():
-            self.on_event("progress", {})
             return
 
         def worker() -> None:
             try:
                 deps = self.deps
                 deps.engine.run(self.project, deps.config, self._load_profile(),
-                                on_event=self.on_event)
-                self.state.goto(3)
-                # Ensure UI refreshes
+                                on_event=self.on_event, only_uids=only_uids)
+                # 翻译完成 → 切到审校页（由主线程执行，遵守 §9 红线）
+                if auto_goto:
+                    self.on_event("goto_step", {"step": 3})
                 self.on_event("progress", {})
-                self.on_event("segment", {}) # Trigger review refresh
+                self.on_event("segment", {})  # Trigger review refresh
             except Exception as exc:
                 self.on_event("log", {"message": f"翻译失败：{exc}"})
             finally:
                 self.on_event("progress", {})
+                self.on_event("translate_finished", {})
 
+        self._translating = True
+        self._refresh_translate_controls()
         threading.Thread(target=worker, daemon=True).start()
 
-    def _build_default_deps(self) -> object:
+    def _build_default_deps(self, *, allow_missing_provider: bool = False) -> object:
+        """组装生产依赖。
+
+        ``allow_missing_provider=True`` 时缺 API Key 不抛错（GUI 未配置模式）：
+        用户在「⚙ 设置」里填好 Key 后，翻译入口会重新组装依赖。
+        """
         from pytran.cli import build_deps
-        return build_deps(self.work_dir)
+        return build_deps(self.work_dir,
+                          allow_missing_provider=allow_missing_provider)
+
+    def _current_config(self):
+        """取当前 Config；不构造 provider（GUI 未配置模式也不抛）。"""
+        if self.deps is not None:
+            return self.deps.config
+        return self._build_default_deps(allow_missing_provider=True).config
 
     def _apply_terms(self, terms_map: dict, exempt_add: list[str]) -> None:
         """把编辑后的术语/豁免写回 profile.json（ADR-0004 无 Key 涉及）。"""
@@ -161,16 +274,26 @@ class PytranApp:
 
     @staticmethod
     def _coerce_setting(attr: str, raw) -> object:
-        """按字段类型收敛对话框字符串；数值留空/非法返回 None（保留既有值）。"""
+        """按字段类型收敛对话框字符串；数值留空/非法返回 None（保留既有值）。
+
+        类型表必须与设置对话框 `fields` 清单保持同步（`_open_settings`）：
+        整数字段走 int 钳位，小数字段走 float，其余原样返回字符串。
+        新增字段时若忘加到这里，字符串会直达 `Config` 并传给下游
+        （openai SDK 的 timeout / Segmenter 的 context_lines 等）。
+        """
         raw = (str(raw) if raw is not None else "").strip()
-        if attr in ("max_tokens", "max_workers", "round_budget_cap"):
+        # 整数字段：0/负数会崩线程池或让循环永动，钳到 >=1
+        if attr in ("max_tokens", "max_workers", "round_budget_cap",
+                    "max_retry_rounds", "context_lines", "block_lines",
+                    "keep_declare_min_batch", "keep_declare_min_total"):
             if not raw:
                 return None
             try:
-                return max(1, int(raw))  # 0/负数会崩线程池，钳到 >=1
+                return max(1, int(raw))
             except ValueError:
                 return None
-        if attr in ("temperature", "top_p"):
+        if attr in ("temperature", "top_p", "timeout",
+                    "keep_declare_rate_limit"):
             if not raw:
                 return None
             try:
@@ -180,17 +303,18 @@ class PytranApp:
         return raw
 
     def _apply_settings(self, values: dict) -> None:
-        """写回 config.ini（§9 L483 字段；ADR-0004：api_key 不落盘由 Config.save 保证）。
+        """写回 config.ini（§9 L483 字段；ADR-0004：api_key 落盘本机 ini）。
 
         未配置模式（deps 为 None）下不构造 provider——写配置不需要网络依赖。
+        ``_NUMERIC_ATTRS`` 中的字段留空/非法时保留既有值，其余（文本）字段
+        允许清空。
         """
         from pytran.cli import build_deps
         cfg = (self.deps.config if self.deps is not None
                else build_deps(self.work_dir, allow_missing_provider=True).config)
         for attr, raw in values.items():
             coerced = self._coerce_setting(attr, raw)
-            if coerced is None and attr in ("max_tokens", "temperature", "top_p",
-                                            "max_workers", "round_budget_cap"):
+            if coerced is None and attr in _NUMERIC_ATTRS:
                 continue  # 数值留空/非法 → 保留既有值
             setattr(cfg, attr, coerced)
         cfg.save(self.work_dir)
@@ -212,8 +336,44 @@ class PytranApp:
             return (True, f"SDK 有效（引擎版本 {version}）")
         return (True, "SDK 有效（版本未知，按 8.x 处理）")
 
+    def _term_ai_helper(self):
+        """术语抽取信号 C 的 AI 助手（W5c §2 信号源 C）。
+
+        返回带 ``complete_text(prompt) -> str`` 的对象，或 ``None``：
+
+        * ``term_extract_use_ai=False`` → None（用户显式关闭）；
+        * 无 API Key → None（GUI 未配置模式，**不构造 provider**——
+          急切构造 ``OpenAIProvider`` 会抛 ``OpenAIError``）；
+        * openai SDK 缺失 / 构造异常 → None 并告警（降级到结构信号）。
+
+        信号 C 是增益不是依赖：返回 None 时 A/D/B 三个结构信号照常工作。
+        """
+        cfg = self._current_config()
+        if not getattr(cfg, "term_extract_use_ai", True):
+            return None
+        if not getattr(cfg, "api_key", ""):
+            return None
+        try:
+            from pytran.providers import OpenAIProvider
+            return OpenAIProvider(cfg)
+        except Exception as exc:  # noqa: BLE001 - 无 SDK / 配置异常
+            self._log(f"术语 AI 识别不可用（{exc}），仅用结构信号抽取",
+                      level="warn")
+            return None
+
     def _load_profile(self) -> TermProfile:
-        return TermProfile.load(self.work_dir / self.state.project.term_profile)
+        """加载术语表 profile。
+
+        B8（W5b §5 边界）：profile.json 损坏时按**空 profile** 处理并告警，
+        不让 JSON 解析异常一路冒到 GUI 外层把整个界面带崩。
+        """
+        path = self.work_dir / self.state.project.term_profile
+        try:
+            return TermProfile.load(path)
+        except Exception as exc:  # noqa: BLE001 - 损坏 JSON / 权限等
+            self._log(f"profile.json 读取失败（{path}）：{exc}"
+                      "——已按空术语表处理，保存后将覆盖原文件", level="warn")
+            return TermProfile()
 
     def run(self) -> None:  # pragma: no cover
         import sys
@@ -221,7 +381,7 @@ class PytranApp:
             QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
             QPushButton, QProgressBar, QLabel, QListWidget, QTextEdit,
             QSplitter, QStackedWidget, QTreeWidget, QTreeWidgetItem,
-            QHeaderView, QComboBox
+            QHeaderView, QComboBox, QGroupBox, QCheckBox
         )
         from PyQt6.QtCore import QTimer, Qt
         
@@ -311,6 +471,49 @@ class PytranApp:
         choose_layout.addWidget(self._widgets["unpack_progress"])
         self._widgets["unpack_progress_label"] = QLabel("尚未解包。")
         choose_layout.addWidget(self._widgets["unpack_progress_label"])
+
+        # ---- §9 工具区：辅助补丁（仅游戏目录模式可用）----
+        # 设计 §8.1/§8.4：四个补丁**修改游戏行为**、与翻译无关，仅调试便利。
+        # 默认不勾选、独立勾选区、可一键移除，写入与移除都记日志。
+        patch_group = QGroupBox("辅助补丁（修改游戏行为，仅调试用；默认不启用）")
+        patch_layout = QVBoxLayout(patch_group)
+        patch_hint = QLabel(
+            "这些补丁会写 game/unren-*.rpy 改变游戏行为，与翻译无关。\n"
+            "勾选后点「注入补丁」；「移除补丁」可随时全部卸载（幂等）。")
+        patch_hint.setWordWrap(True)
+        patch_hint.setStyleSheet("color: #666; font-size: 12px;")
+        patch_layout.addWidget(patch_hint)
+
+        self._patch_boxes = {}
+        _PATCH_LABELS = [
+            ("console", "☐ 控制台/开发者菜单"),
+            ("quick", "☐ 快速存读档 F5/F9"),
+            ("skip", "☐ 强制跳过未读文本（TAB/CTRL 快进）"),
+            ("rollback", "☐ 强制回滚（滚轮/PAGEUP）"),
+        ]
+        checks_row = QHBoxLayout()
+        for key, label in _PATCH_LABELS:
+            cb = QCheckBox(label)
+            self._patch_boxes[key] = cb
+            checks_row.addWidget(cb)
+        checks_row.addStretch(1)
+        patch_layout.addLayout(checks_row)
+
+        patch_btns = QHBoxLayout()
+        self._widgets["btn_apply_patch"] = QPushButton("注入补丁")
+        self._widgets["btn_apply_patch"].clicked.connect(self._on_apply_patches)
+        patch_btns.addWidget(self._widgets["btn_apply_patch"])
+        self._widgets["btn_remove_patch"] = QPushButton("移除补丁")
+        self._widgets["btn_remove_patch"].clicked.connect(self._on_remove_patches)
+        patch_btns.addWidget(self._widgets["btn_remove_patch"])
+        self._widgets["patch_status"] = QLabel("")
+        self._widgets["patch_status"].setStyleSheet("color: #666; font-size: 12px;")
+        patch_btns.addWidget(self._widgets["patch_status"])
+        patch_btns.addStretch(1)
+        patch_layout.addLayout(patch_btns)
+
+        choose_layout.addWidget(patch_group)
+        self._widgets["patch_group"] = patch_group
         self._widgets["stack"].addWidget(page_choose)
         
         # --- Page 1: Import ---
@@ -352,7 +555,24 @@ class PytranApp:
         page_translate = QWidget()
         translate_layout = QVBoxLayout(page_translate)
         translate_layout.addWidget(QLabel("第三步：自动汉化进程。"))
-        
+
+        # 生效参数 / 成本估算行（§9 L483 + §15.3 成本闸）：
+        # 用户改了什么、本次准备烧多少 token，开跑前一眼可见。
+        self._widgets["translate_info"] = QLabel("准备就绪")
+        self._widgets["translate_info"].setStyleSheet(
+            "color: #444; font-size: 12px; padding: 2px 0px;")
+        self._widgets["translate_info"].setWordWrap(True)
+        translate_layout.addWidget(self._widgets["translate_info"])
+
+        # 预算超限警告（§15.3）：默认隐藏
+        self._widgets["budget_warn"] = QLabel("")
+        self._widgets["budget_warn"].setStyleSheet(
+            "color: #b03030; font-weight: bold; padding: 4px; "
+            "background-color: #fdecea; border-radius: 4px;")
+        self._widgets["budget_warn"].setWordWrap(True)
+        self._widgets["budget_warn"].hide()
+        translate_layout.addWidget(self._widgets["budget_warn"])
+
         progress_layout = QVBoxLayout()
         self._widgets["progress"] = QProgressBar()
         self._widgets["progress"].setRange(0, 100)
@@ -360,17 +580,66 @@ class PytranApp:
         self._widgets["progress_label"] = QLabel("准备就绪")
         progress_layout.addWidget(self._widgets["progress_label"])
         translate_layout.addLayout(progress_layout)
-        
+
         translate_btns = QHBoxLayout()
         self._widgets["btn_translate"] = QPushButton("开始自动翻译")
         self._widgets["btn_translate"].clicked.connect(self._start_translate)
         translate_btns.addWidget(self._widgets["btn_translate"])
-        
+
+        # 「重试失败项」与「开始自动翻译」分流（问题清单 B1）：
+        # 只重发 FAILED 行，靠 engine.run(only_uids=...) 实现。
         self._widgets["btn_retry"] = QPushButton("重试失败项")
-        self._widgets["btn_retry"].clicked.connect(self._start_translate)
+        self._widgets["btn_retry"].clicked.connect(self._retry_failed)
         translate_btns.addWidget(self._widgets["btn_retry"])
+
+        # 停止按钮（9ee271f 的 engine.stop() 协作式中断）：
+        # 翻译中可中止，已译结果保留（project.json 原子写，不损坏）。
+        self._widgets["btn_stop"] = QPushButton("■ 停止")
+        self._widgets["btn_stop"].clicked.connect(self._stop_translate)
+        self._widgets["btn_stop"].setEnabled(False)
+        translate_btns.addWidget(self._widgets["btn_stop"])
+
+        self._widgets["btn_budget"] = QPushButton("设置预算上限…")
+        self._widgets["btn_budget"].clicked.connect(self._set_budget_max)
+        translate_btns.addWidget(self._widgets["btn_budget"])
+
+        # R1：「试译」入口——用少量样本验证「模型+提示词+术语表+参数」
+        # 这套组合是否合适，再决定是否全量开跑。避免十万段工程跑了几千行
+        # 才发现风格不对或术语没生效，返工成本极高（问题清单 R1）。
+        self._widgets["btn_trial"] = QPushButton("试译…")
+        self._widgets["btn_trial"].clicked.connect(self._trial_translate)
+        self._widgets["btn_trial"].setToolTip(
+            "只翻译少量样本行，用于确认模型/术语表/参数是否合适。\n"
+            "试译走与全量完全相同的校验链，结果写入工程。")
+        translate_btns.addWidget(self._widgets["btn_trial"])
+
         translate_layout.addLayout(translate_btns)
-        translate_layout.addStretch()
+
+        # R2：「最新译文」预览面板——翻译过程中即时看到已译内容，
+        # 确认翻译「如预期进行」（问题清单 R2）。
+        # 与审校页的边界：本面板只读预览，不承载编辑；编辑仍去审校页，
+        # 避免与审校页的游标/编辑态竞争。
+        preview_group = QGroupBox("最新译文（即时预览；修改请到「审校」页）")
+        preview_layout = QVBoxLayout(preview_group)
+        self._widgets["preview_list"] = QListWidget()
+        self._widgets["preview_list"].setToolTip(
+            "翻译过程中每完成一行即追加显示；只读，编辑请到审校页。")
+        preview_layout.addWidget(self._widgets["preview_list"])
+        preview_bar = QHBoxLayout()
+        self._widgets["btn_preview_pause"] = QPushButton("暂停滚动")
+        self._widgets["btn_preview_pause"].setCheckable(True)
+        self._widgets["btn_preview_pause"].toggled.connect(
+            self._on_preview_pause_toggled)
+        preview_bar.addWidget(self._widgets["btn_preview_pause"])
+        self._widgets["preview_count"] = QLabel("")
+        self._widgets["preview_count"].setStyleSheet("color: #666; font-size: 12px;")
+        preview_bar.addWidget(self._widgets["preview_count"])
+        preview_bar.addStretch(1)
+        self._widgets["btn_preview_clear"] = QPushButton("清空")
+        self._widgets["btn_preview_clear"].clicked.connect(self._clear_preview)
+        preview_bar.addWidget(self._widgets["btn_preview_clear"])
+        preview_layout.addLayout(preview_bar)
+        translate_layout.addWidget(preview_group, stretch=1)
         self._widgets["stack"].addWidget(page_translate)
         
         # --- Page 3: Review ---
@@ -521,7 +790,7 @@ class PytranApp:
                                      QVBoxLayout, QMessageBox, QTabWidget, QWidget,
                                      QTableWidget, QTableWidgetItem, QLabel,
                                      QPlainTextEdit, QHBoxLayout, QHeaderView,
-                                     QAbstractItemView)
+                                     QAbstractItemView, QCheckBox)
         from PyQt6.QtCore import Qt
 
         dlg = QDialog(self._window)
@@ -529,7 +798,9 @@ class PytranApp:
         dlg.setModal(True)
         dlg.resize(640, 520)
 
-        cfg = self._build_default_deps().config if self.deps is None else self.deps.config
+        # 未配置模式（缺 API Key）也要能打开设置对话框填 Key：
+        # 用 allow_missing_provider 避免 OpenAIProvider 构造时抛 OpenAIError。
+        cfg = self._current_config()
         profile = self._load_profile()
 
         tabs = QTabWidget(dlg)
@@ -551,6 +822,7 @@ class PytranApp:
             ("Ren'Py SDK 目录（可选，生成 tl 骨架）", "renpy_sdk_dir", False),
             ("目标语言", "language", False),
             ("前文参考行数 (context_lines，0=关闭)", "context_lines", False),
+            ("切块大小 (block_lines，行/块)", "block_lines", False),
         ]
         entries = {}
         for label, attr, secret in fields:
@@ -572,16 +844,30 @@ class PytranApp:
         btns.addWidget(btn_extract); btns.addStretch(1)
         v.addLayout(btns)
 
+        # W5b §5 边界：工程为空时无法抽取，置灰
+        btn_extract.setEnabled(bool(self.project.segments))
+
         table = QTableWidget(0, 2)
         table.setHorizontalHeaderLabels(["原文", "译名（留空=按原文保留）"])
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for src in sorted(profile.terms):
+        # §3.2「按原文排序显示」：复用 terms.profile_to_rows 的排序口径
+        from pytran.terms import profile_to_rows
+        for src, dst in profile_to_rows(profile):
             row = table.rowCount()
             table.insertRow(row)
             table.setItem(row, 0, QTableWidgetItem(src))
-            table.setItem(row, 1, QTableWidgetItem(profile.terms[src]))
+            table.setItem(row, 1, QTableWidgetItem(dst))
         v.addWidget(table)
+
+        # B4：白名单开关（W5b §3.1 交互设计图中的 ☑ 项）。
+        # 勾选时「免翻英文短语」输入框生效；不勾则只用自动推导的豁免。
+        exempt_toggle = QCheckBox("命中术语的英文不判为「含英文」（白名单）")
+        exempt_toggle.setChecked(True)
+        exempt_toggle.setToolTip(
+            "勾选后，下方「免翻英文短语」列表参与 §5.1 英文判定；\n"
+            "取消勾选则仅使用「译名留空」自动推导出的豁免。")
+        v.addWidget(exempt_toggle)
 
         exempt_label = QLabel(
             "免翻英文短语（每行一个；译名留空的英文条目保存时自动加入）：")
@@ -592,22 +878,44 @@ class PytranApp:
 
         def add_row():
             table.insertRow(table.rowCount())
+            table.editItem(table.item(table.rowCount() - 1, 0))
+
         def del_rows():
             for it in reversed(sorted(table.selectedIndexes())):
                 table.removeRow(it.row())
+
         def extract_candidates():
+            """B3：弹候选对话框，由用户逐条决定译名/忽略（W5b §3.2 / W5c §2）。
+
+            旧实现把候选直接 append 进表格，且第二列写死 "(出现 N 次)"
+            这个伪译名——用户若直接保存，该字符串会被当成译名写进 terms。
+
+            W5c：候选来自四个信号源（A 角色定义 / D 对话 role / B old 短串 /
+            C AI 识别），弹窗展示「来源」列让用户判断置信度。AI 信号受
+            ``term_extract_use_ai`` 开关与 API Key 双重约束，任一缺失时
+            A/D/B 仍正常工作。
+            """
             from pytran.terms import extract_candidates
-            cands = extract_candidates(self.project.segments, profile)
+            cands = extract_candidates(
+                self.project.segments,
+                profile,
+                game_root=self.project.game_root or None,
+                ai_helper=self._term_ai_helper(),
+                language=(getattr(self._current_config(), "language", "")
+                          or "chinese"),
+            )
             if not cands:
                 QMessageBox.information(dlg, "抽取", "未发现新的候选术语")
                 return
-            for c in cands:
+            chosen = self._pick_term_candidates(dlg, cands)
+            for term, translation in chosen:
                 row = table.rowCount()
                 table.insertRow(row)
-                it0 = QTableWidgetItem(c.term)
-                it0.setBackground(Qt.GlobalColor.lightGray)  # 候选待填
+                it0 = QTableWidgetItem(term)
+                it0.setBackground(Qt.GlobalColor.lightGray)  # 新候选待确认
                 table.setItem(row, 0, it0)
-                table.setItem(row, 1, QTableWidgetItem(f"(出现 {c.count} 次)"))
+                table.setItem(row, 1, QTableWidgetItem(translation))
+
         btn_add.clicked.connect(add_row)
         btn_del.clicked.connect(del_rows)
         btn_extract.clicked.connect(extract_candidates)
@@ -629,12 +937,17 @@ class PytranApp:
         layout.addWidget(tabs)
 
         def save():
-            for attr, e in entries.items():
-                setattr(cfg, attr, e.text().strip())
-            cfg.save(self.work_dir)
+            # 常规页字段统一走 _apply_settings：它负责按类型收敛
+            # （_coerce_setting）并对数值字段做「留空保留既有值」。
+            # 直接 setattr 会把所有字段写成字符串——timeout / context_lines
+            # 等会以 str 传给 SDK 与 Segmenter，必须走这条经过测试的路。
+            values = {attr: e.text().strip() for attr, e in entries.items()}
+            self._apply_settings(values)
 
-            terms_map: dict[str, str] = {}
-            exempt_add: list[str] = []
+            # 术语表：复用 terms.py 的纯逻辑（rows_to_terms 负责「空译名 +
+            # 英文 → 自动进豁免」与「重复原文后者覆盖」），GUI 只做收集。
+            from pytran.terms import rows_to_terms, detect_duplicate_originals
+            rows: list[tuple[str, str]] = []
             for row in range(table.rowCount()):
                 it0, it1 = table.item(row, 0), table.item(row, 1)
                 if it0 is None:
@@ -643,31 +956,132 @@ class PytranApp:
                 dst = (it1.text().strip() if it1 else "")
                 if not src:
                     continue
-                if dst:
-                    terms_map[src] = dst
-                elif re.search(r"[A-Za-z]", src):
-                    exempt_add.append(src)
-            for ex in exempt_edit.toPlainText().splitlines():
-                ex = ex.strip()
-                if ex and ex not in exempt_add:
-                    exempt_add.append(ex)
+                rows.append((src, dst))
+
+            dups = detect_duplicate_originals(rows)
+            terms_map, auto_exempt = rows_to_terms(rows)
+
+            exempt_add: list[str] = list(auto_exempt)
+            # B4：白名单开关控制「免翻英文短语」输入框是否生效
+            if exempt_toggle.isChecked():
+                for ex in exempt_edit.toPlainText().splitlines():
+                    ex = ex.strip()
+                    if ex and ex not in exempt_add:
+                        exempt_add.append(ex)
             self._apply_terms(terms_map, exempt_add)
 
             append = rules_edit.toPlainText().strip()
             self._apply_rules(append)
 
-            QMessageBox.information(
-                dlg, "设置",
-                "已保存到 config.ini / profile.json。\n"
-                "API Key 不会写入文件（持久化请设系统环境变量 TL_API_KEY）。\n"
-                "术语表与规则将在下次翻译时生效。")
+            # B6：保存结果汇总（W5b §3.2「弹窗汇总保存结果」）
+            parts = [
+                "已保存到 config.ini / profile.json。",
+                f"术语 {len(terms_map)} 条，免翻短语 {len(exempt_add)} 条。",
+            ]
+            if dups:
+                parts.append(f"重复原文已合并（后值覆盖）：{'、'.join(dups[:5])}"
+                             + ("…" if len(dups) > 5 else ""))
+            parts.append("API Key 写入本机 config.ini（已 gitignore，不进版本库）；"
+                         "环境变量 TL_API_KEY 优先级更高。")
+            parts.append("术语表与规则将在下次翻译时生效。")
+            QMessageBox.information(dlg, "设置", "\n".join(parts))
             dlg.accept()
 
         btn_save = QPushButton("保存")
         btn_save.clicked.connect(save)
         layout.addWidget(btn_save)
 
+        # 记录最近一次打开的设置对话框，供无头测试驱动（真实 GUI 不受影响）。
+        self._settings_dialog = dlg
         dlg.exec()
+
+    def _pick_term_candidates(self, parent, candidates) -> list[tuple[str, str]]:
+        """B3：候选术语选择对话框（W5b §3.2 / W5c §3）。
+
+        列：候选词 | 来源 | 出现次数 | 译名。用户逐条填译名或删行忽略；
+        确定后只把**填了译名**或**标记保留**的条目并回表格。
+        译名留空且原文含英文 → 视为「按原文保留」。
+
+        「来源」列（W5c §3）让用户知道置信度：
+        ``A`` = `define x = Character("N")` 权威定义；
+        ``D`` = 对话行前缀的说话人名（结构信号）；
+        ``B`` = 作者声明的 `old "X"` 短串；
+        ``C`` = AI 识别（已按出现次数过滤，仍建议抽查）。
+
+        ``candidates`` 为 :class:`pytran.terms.Candidate` 列表。
+        返回 ``[(term, translation)]``；``translation`` 可为空串（保留原文）。
+        """
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
+            QPushButton, QLabel, QHeaderView, QCheckBox,
+        )
+        from PyQt6.QtCore import Qt
+
+        dlg = QDialog(parent)
+        dlg.setWindowTitle("候选术语")
+        dlg.resize(620, 480)
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(QLabel(
+            "下表为从工程中抽取的候选术语。填写译名后点「确定」并入术语表；\n"
+            "译名留空 = 按原文保留（原文含英文时自动加入免翻短语）。\n"
+            "不想要的条目直接删行或留空忽略。\n"
+            "来源：A=角色定义（最可靠） D=对话说话人 B=old短串 C=AI识别（建议抽查）"))
+
+        table = QTableWidget(0, 4)
+        table.setHorizontalHeaderLabels(["候选词", "来源", "出现次数", "译名（留空=保留）"])
+        table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.Stretch)
+        for c in candidates:
+            row = table.rowCount()
+            table.insertRow(row)
+            table.setItem(row, 0, QTableWidgetItem(c.term))
+            src = QTableWidgetItem(getattr(c, "source", "") or "")
+            src.setFlags(src.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            src.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            table.setItem(row, 1, src)
+            cnt = QTableWidgetItem(str(c.count))
+            cnt.setFlags(cnt.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            table.setItem(row, 2, cnt)
+            table.setItem(row, 3, QTableWidgetItem(""))
+        layout.addWidget(table)
+
+        bar = QHBoxLayout()
+        btn_del = QPushButton("删除选中")
+        btn_del.clicked.connect(
+            lambda: [table.removeRow(it.row())
+                     for it in reversed(sorted(table.selectedIndexes()))])
+        bar.addWidget(btn_del)
+        bar.addStretch(1)
+        btn_ok = QPushButton("确定")
+        btn_ok.setDefault(True)
+        btn_cancel = QPushButton("取消")
+        bar.addWidget(btn_ok)
+        bar.addWidget(btn_cancel)
+        layout.addLayout(bar)
+
+        result: list[tuple[str, str]] = []
+        btn_ok.clicked.connect(dlg.accept)
+        btn_cancel.clicked.connect(dlg.reject)
+
+        if dlg.exec():
+            for row in range(table.rowCount()):
+                it0 = table.item(row, 0)
+                if it0 is None:
+                    continue
+                term = it0.text().strip()
+                if not term:
+                    continue
+                # 译名列已因新增「来源」列右移到 index 3
+                it3 = table.item(row, 3)
+                translation = (it3.text().strip() if it3 else "")
+                # 只并入「填了译名」或「原文含英文（保留原文）」的条目；
+                # 纯中文候选留空则视为忽略，避免把无意义条目写进术语表。
+                if translation or re.search(r"[A-Za-z]", term):
+                    result.append((term, translation))
+        return result
+
     def _on_step(self, idx: int) -> None:
         stack = self._widgets.get("stack")
         if stack:
@@ -835,24 +1249,47 @@ class PytranApp:
         self._do_import_files(selected_files)
 
     def _selected_import_files(self) -> list[Path]:
-        """从导入页勾选树收集用户勾选的文件（无树时回退全部发现）。"""
+        """从导入页勾选树收集用户勾选的文件。
+
+        N2（问题清单）：旧实现 ``return picked or discovered`` 使
+        **全取消勾选 = 导入全部**，与用户直觉相反，也破坏了 `9ee271f`
+        第 ⑤ 项「取消勾选即跳过」的部分导入意图。
+
+        现在的语义：
+        * 勾选树已构建 → 严格按勾选状态返回（全取消 = 空列表，由调用方提示）；
+        * 树尚未构建（`_refresh_import_tree` 未跑过）→ 回退全部发现。
+        """
         tree = self._widgets.get("import_tree")
         if tree is None:
+            return self._get_discovered_rpy_files()
+        if tree.topLevelItemCount() == 0:
+            # 树是空的：说明还没刷新过，此时才回退到「全部发现」
             return self._get_discovered_rpy_files()
         from PyQt6.QtCore import Qt
         picked: list[Path] = []
         for i in range(tree.topLevelItemCount()):
             it = tree.topLevelItem(i)
             if it.checkState(0) == Qt.CheckState.Checked:
-                picked.append(Path(it.data(0, Qt.ItemDataRole.UserRole)))
-        return picked or self._get_discovered_rpy_files()
+                path_obj = it.data(0, Qt.ItemDataRole.UserRole)
+                if path_obj:
+                    picked.append(Path(path_obj))
+        return picked
 
     def _import_rpy(self) -> None:
-        # 按勾选树导入（用户可取消勾选实现部分导入）
+        # 按勾选树导入（用户可取消勾选实现部分导入，N2）
         all_files = self._selected_import_files()
         if not all_files:
             from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.information(self._window, "导入", "未发现可供导入的 .rpy 文件，请先在「选择目录」中选择游戏或解包。")
+            # 区分「没有可导入文件」与「用户取消了全部勾选」两种情形
+            if self._get_discovered_rpy_files():
+                QMessageBox.information(
+                    self._window, "导入",
+                    "没有勾选任何脚本。\n"
+                    "请至少勾选一个文件，或用「全选」恢复默认选择。")
+            else:
+                QMessageBox.information(
+                    self._window, "导入",
+                    "未发现可供导入的 .rpy 文件，请先在「选择目录」中选择游戏或解包。")
             return
         self._do_import_files(all_files)
 
@@ -919,8 +1356,298 @@ class PytranApp:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.information(self._window, "翻译", "工程为空：请先完成「选择目录」和「导入」")
             return
+        # §15.3 成本闸：超预算时要求确认，不静默开跑
+        if not self._confirm_budget():
+            return
         self.state.goto(2)
         self._translate_in_background()
+
+    def _retry_failed(self) -> None:
+        """§6.5「失败重译」：只重发 FAILED 行（问题清单 B1）。
+
+        与「开始自动翻译」分流：后者会把 PENDING/FAILED/KEEP_DECLARED
+        全部收进队列，前者只针对失败行，语义与按钮文案一致。
+        """
+        if not self._ensure_engine_ready():
+            return
+        from pytran.models import SegmentStatus
+        failed = {s.uid for s in self.project.segments
+                  if s.status == SegmentStatus.FAILED}
+        if not failed:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(self._window, "重试", "当前没有失败项需要重试。")
+            return
+        if not self._confirm_budget(only_uids=failed):
+            return
+        self._log(f"重试 {len(failed)} 个失败项……")
+        self._translate_in_background(only_uids=failed)
+
+    def _stop_translate(self) -> None:
+        """9ee271f：协作式中止。当前 in-flight 的块会跑完，后续块跳过。"""
+        engine = getattr(self.deps, "engine", None) if self.deps else None
+        if engine is not None and hasattr(engine, "stop"):
+            engine.stop()
+            self._log("已请求停止翻译（当前块完成后不再发送新块）")
+        else:
+            self._log("翻译引擎未就绪，无需停止", level="warn")
+        lbl = self._widgets.get("progress_label")
+        if lbl is not None:
+            lbl.setText("正在停止……")
+
+    def _set_budget_max(self) -> None:
+        """设置本次会话的 token 预算上限（§15.3，不落盘）。"""
+        from PyQt6.QtWidgets import QInputDialog
+        cur = "" if self._budget_max is None else str(self._budget_max)
+        text, ok = QInputDialog.getText(
+            self._window, "预算上限",
+            "本次翻译的 token 预算上限（留空 = 不限制）：", text=cur)
+        if not ok:
+            return
+        text = (text or "").strip()
+        self._budget_max = int(text) if text.isdigit() and int(text) > 0 else None
+        self._refresh_translate_info()
+
+    def _confirm_budget(self, only_uids: Optional[set] = None) -> bool:
+        """§15.3 成本闸：估算超预算时询问用户，返回是否继续。"""
+        estimate = self._estimate_tokens(only_uids)
+        if self._budget_max is None or estimate <= self._budget_max:
+            return True
+        from PyQt6.QtWidgets import QMessageBox
+        ret = QMessageBox.question(
+            self._window, "超出预算",
+            f"估算消耗约 {estimate:,} token，超过设定上限 {self._budget_max:,}。\n"
+            "仍要开始翻译吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return ret == QMessageBox.StandardButton.Yes
+
+    def _translatable_uids(self) -> list:
+        """返回本次可译的 uid（按 uid 升序，与切块顺序一致）。
+
+        口径与 ``TranslationEngine._build_queue`` 严格一致：
+        PENDING / FAILED / KEEP_DECLARED。SKIPPED 不进（设计 §14：
+        宁可不翻不可弄坏），TRANSLATED / REVIEWED 不进（断点续传跳过）。
+        """
+        from pytran.models import SegmentStatus
+        return sorted(
+            s.uid for s in self.project.segments
+            if s.status in (SegmentStatus.PENDING, SegmentStatus.FAILED,
+                            SegmentStatus.KEEP_DECLARED)
+        )
+
+    def _estimate_tokens(self, only_uids: Optional[set] = None) -> int:
+        """§15.3 dry-run 估算（复用 cli.estimate_token_budget 的口径）。
+
+        **只对待译行求和**（问题清单 N1）：旧实现传整个 project，
+        而已译行的 target 会被全额计入，但引擎根本不会重发它们——
+        实测 100 段（50 已译）时估算虚高 2.4 倍（21450 vs 9100），
+        导致预算设不准、或被虚假的超限警告骚扰。
+
+        ``only_uids`` 非空时只对这些行求和（试译/失败重试的估算）。
+        """
+        from pytran.cli import estimate_token_budget
+        cfg = self._current_config()
+        uids = (set(only_uids) if only_uids is not None
+                else set(self._translatable_uids()))
+        from pytran.models import Project
+        segs = [s for s in self.project.segments if s.uid in uids]
+        try:
+            return estimate_token_budget(Project(segments=segs), cfg)
+        except Exception:  # noqa: BLE001 - 估算失败不应阻断翻译
+            return 0
+
+    def _refresh_translate_info(self) -> None:
+        """刷新翻译页的「生效参数 + 成本估算」行（§9 L483 / §15.3）。"""
+        lbl = self._widgets.get("translate_info")
+        warn = self._widgets.get("budget_warn")
+        if lbl is None:
+            return
+        try:
+            cfg = self._current_config()
+        except Exception:  # noqa: BLE001
+            lbl.setText("参数读取失败（请检查 config.ini）")
+            return
+        estimate = self._estimate_tokens(None)
+        # 与 _translatable_uids / _build_queue 同一口径（问题清单 N1）
+        pending = len(self._translatable_uids())
+        lbl.setText(
+            f"模型：{cfg.model or '(未配置)'}"
+            f"{' → ' + cfg.fallback_model if cfg.fallback_model else ''}"
+            f"  |  并发 {cfg.max_workers}  温度 {cfg.temperature}"
+            f"  块大小 {getattr(cfg, 'block_lines', 30)} 行"
+            f"  前文 {getattr(cfg, 'context_lines', 3)} 行\n"
+            f"待译 {pending} 行，估算约 {estimate:,} token"
+            + (f"（预算上限 {self._budget_max:,}）" if self._budget_max else "")
+        )
+        if warn is not None:
+            if self._budget_max is not None and estimate > self._budget_max:
+                warn.setText(
+                    f"⚠ 估算 {estimate:,} token 超出预算上限 {self._budget_max:,}"
+                    "（§15.3）：开始前会再次要求确认。")
+                warn.show()
+            else:
+                warn.hide()
+
+    def _refresh_translate_controls(self) -> None:
+        """翻译中/空闲两态的按钮可用性切换。"""
+        busy = bool(getattr(self, "_translating", False))
+        btn = self._widgets.get("btn_stop")
+        if btn is not None:
+            btn.setEnabled(busy)
+        for key in ("btn_translate", "btn_retry", "btn_budget", "btn_trial"):
+            b = self._widgets.get(key)
+            if b is not None:
+                b.setEnabled(not busy)
+
+    def _trial_translate(self) -> None:
+        """R1：试译——只翻少量样本，验证「模型+提示词+术语表+参数」组合。
+
+        设计意图（问题清单 R1）：十万段工程跑了几千行才发现风格不对或
+        术语没生效，返工成本极高。先用一个块大小的样本确认组合合适，
+        再决定是否全量开跑。
+
+        实现要点：
+        * 从未译行（PENDING/FAILED/KEEP_DECLARED）按 uid 升序取前 N 条——
+          与切块顺序一致，保证带上前文上下文（§4.1）；
+        * 走 ``engine.run(only_uids=...)``，与全量**完全同一套校验链**
+          （V1-V6 / 检测器），不是简化版；
+        * 结果写入工程（project.json），后续全量翻译不会重翻这些行；
+        * 完成后**不自动跳页**——试译目的是让人去看结果，不是催他进下一步。
+        """
+        if not self._ensure_engine_ready():
+            return
+        if not self.state.has_segments:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(self._window, "试译", "工程为空：请先完成「选择目录」和「导入」")
+            return
+
+        # 口径与 _build_queue / _estimate_tokens 共用（问题清单 N1）
+        translatable = self._translatable_uids()
+        if not translatable:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(self._window, "试译", "当前没有可试译的行（全部已翻译）。")
+            return
+
+
+        # 试译行数：默认一个块大小（保证是一个完整块、带上下文）
+        cfg = self._current_config()
+        default_lines = max(1, int(getattr(cfg, "block_lines", 30) or 30))
+        default_lines = min(default_lines, len(translatable))
+        if self._trial_lines:
+            default_lines = min(self._trial_lines, len(translatable))
+
+        from PyQt6.QtWidgets import QInputDialog
+        text, ok = QInputDialog.getInt(
+            self._window, "试译",
+            f"试译行数（共 {len(translatable)} 行待译；\n"
+            "建议取一个块大小，以便带上前文上下文）：",
+            value=default_lines, min=1, max=len(translatable), step=1)
+        if not ok:
+            return
+        self._trial_lines = int(text)
+        picked = set(translatable[:self._trial_lines])
+
+        if not self._confirm_budget(only_uids=picked):
+            return
+        self._clear_preview()
+        self._log(f"试译 {len(picked)} 行（共 {len(translatable)} 行待译）……")
+        self._translate_in_background(only_uids=picked, auto_goto=False)
+
+    # ---- R2：最新译文预览 ------------------------------------------------
+    def _on_segment_event(self, data: dict) -> None:
+        """R2：把一行翻译结果送入「最新译文」预览面板。
+
+        ``segment`` 事件只带 ``uid`` / ``status`` / ``reason``，不带原文译文，
+        因此回 ``project.segments`` 取当前值（引擎已把 target 写回 segment，
+        且 project.json 是原子写，此处读到的是最新态）。
+
+        只在**翻译运行中**入列：避免用户在审校页手动 accept/flag 时
+        也往翻译页预览里堆条目（那会让「试译结果」和「审校操作」混在一起）。
+        """
+        if not self._translating:
+            return
+        uid = data.get("uid")
+        if uid is None:
+            return
+        seg = next((s for s in self.project.segments if s.uid == uid), None)
+        if seg is None:
+            return
+        self._append_preview(seg)
+
+    def _on_preview_pause_toggled(self, checked: bool) -> None:
+        """暂停/恢复预览面板的自动滚动。"""
+        self._preview_paused = bool(checked)
+        btn = self._widgets.get("btn_preview_pause")
+        if btn is not None:
+            btn.setText("恢复滚动" if checked else "暂停滚动")
+
+    def _clear_preview(self) -> None:
+        """清空预览面板与计数。"""
+        lb = self._widgets.get("preview_list")
+        if lb is not None:
+            lb.clear()
+        self._preview_seen = 0
+        self._refresh_preview_count()
+
+    def _refresh_preview_count(self) -> None:
+        lbl = self._widgets.get("preview_count")
+        if lbl is None:
+            return
+        lb = self._widgets.get("preview_list")
+        shown = lb.count() if lb is not None else 0
+        if self._preview_seen == 0:
+            lbl.setText("")
+        elif shown < self._preview_seen:
+            lbl.setText(f"已接收 {self._preview_seen} 条（面板仅保留最近 {shown} 条）")
+        else:
+            lbl.setText(f"已接收 {self._preview_seen} 条")
+
+    def _append_preview(self, seg) -> None:
+        """把一条已译段落进预览面板。
+
+        * 只保留最近 ``_PREVIEW_MAX_ROWS`` 条（十万级长跑时的渲染/内存权衡）；
+        * 失败行红色 + 原因；``keep_declared`` 标注「AI 申报保留」；
+        * 暂停滚动时仍入列，但不强制滚到底（用户可自己滚动查看）。
+        """
+        lb = self._widgets.get("preview_list")
+        if lb is None:
+            return
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtGui import QColor, QBrush
+        from PyQt6.QtWidgets import QListWidgetItem
+
+        status = getattr(seg, "status", None)
+        status_name = getattr(status, "name", "") or ""
+        target = (seg.target or "").strip()
+        source = (seg.source or "").strip()
+
+        if status_name == "FAILED":
+            text = f"[失败] {source[:40]}\n    ✗ {seg.error or '未知原因'}"
+            color = QColor("#b03030")
+        elif status_name == "KEEP_DECLARED":
+            text = f"[AI 申报保留] {source[:40]}\n    → {target or '(原文)'}"
+            color = QColor("#b8860b")
+        elif status_name in ("TRANSLATED", "REVIEWED"):
+            text = f"[{seg.uid}] {source[:40]}\n    → {target}"
+            color = QColor("#2e7d32") if status_name == "REVIEWED" else QColor("#1a1a1a")
+        else:
+            # 其它状态（如 PENDING）不入预览——面板只展示「已译内容」
+            return
+
+        item = QListWidgetItem(text)
+        item.setForeground(QBrush(color))
+        item.setData(Qt.ItemDataRole.UserRole, seg.uid)
+        lb.addItem(item)
+
+        # 超过上限时从头部丢弃，避免十万级长跑无限增长
+        while lb.count() > _PREVIEW_MAX_ROWS:
+            lb.takeItem(0)
+
+        self._preview_seen += 1
+        self._refresh_preview_count()
+        if not self._preview_paused:
+            lb.scrollToBottom()
 
     def _on_list_select(self, row: int) -> None:
         if row < 0: return
@@ -957,6 +1684,106 @@ class PytranApp:
                 return exe, sdk_dir
         return None, sdk_dir
 
+    # ---- §8.1 / §8.4 辅助补丁 -------------------------------------------
+    def _on_apply_patches(self) -> None:
+        """注入勾选的辅助补丁（§8.4：默认不启用、独立勾选、可卸载）。
+
+        * 只写勾中的补丁，未勾选的不碰；
+        * 已存在的补丁由 ``UnrenImpl.apply_patch`` 拒绝覆盖（幂等），
+          这里把 GameError 转成可读提示；
+        * 写入与结果都记日志（§8.4）。
+        """
+        if not self.project.game_root:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self._window, "辅助补丁",
+                "辅助补丁只能用于游戏目录模式。\n请先在「选择目录」中选择游戏根目录。")
+            return
+        picked = [k for k, cb in self._patch_boxes.items() if cb.isChecked()]
+        if not picked:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(self._window, "辅助补丁", "请先勾选要注入的补丁。")
+            return
+        if self.deps is None:
+            # 补丁只需 unren，不需要 API Key / provider：
+            # 用 allow_missing_provider 避免未配置模式下 OpenAIError。
+            self.deps = self._build_default_deps(allow_missing_provider=True)
+
+        written, skipped = [], []
+        for key in picked:
+            try:
+                path = self.deps.unren.apply_patch(
+                    Path(self.project.game_root), key)
+                written.append(path.name)
+                self._log(f"已注入辅助补丁 {path.name}（修改游戏行为，仅调试用）")
+            except Exception as exc:  # noqa: BLE001 - GameError 等转可读提示
+                skipped.append(f"{key}: {exc}")
+                self._log(f"补丁 {key} 注入失败：{exc}", level="warn")
+
+        from PyQt6.QtWidgets import QMessageBox
+        msg = []
+        if written:
+            msg.append("已写入：" + "、".join(written))
+        if skipped:
+            msg.append("已跳过：\n" + "\n".join(skipped))
+        msg.append("这些补丁修改游戏行为，与翻译无关；「移除补丁」可随时卸载。")
+        QMessageBox.information(self._window, "辅助补丁", "\n\n".join(msg))
+        self._refresh_patch_ui()
+
+    def _on_remove_patches(self) -> None:
+        """一键移除全部 unren-*.rpy（§8.4 幂等卸载）。"""
+        if not self.project.game_root:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self._window, "辅助补丁",
+                "辅助补丁只能用于游戏目录模式。\n请先在「选择目录」中选择游戏根目录。")
+            return
+        if self.deps is None:
+            # 同 _on_apply_patches：移除补丁不需要 provider。
+            self.deps = self._build_default_deps(allow_missing_provider=True)
+        try:
+            removed = self.deps.unren.remove_patches(
+                Path(self.project.game_root))
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"移除补丁失败：{exc}", level="warn")
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self._window, "移除补丁失败", str(exc))
+            return
+
+        self._log(f"已移除 {len(removed)} 个辅助补丁"
+                  + ("：" + "、".join(p.name for p in removed) if removed else ""))
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(
+            self._window, "辅助补丁",
+            f"已移除 {len(removed)} 个补丁。" if removed else "没有找到已注入的补丁。")
+        self._refresh_patch_ui()
+
+    def _refresh_patch_ui(self) -> None:
+        """按当前模式（是否有游戏目录 / 已注入哪些补丁）刷新补丁区。"""
+        group = self._widgets.get("patch_group")
+        status = self._widgets.get("patch_status")
+        if group is None:
+            return
+        has_game = bool(self.project.game_root)
+        group.setEnabled(has_game)
+
+        existing = set()
+        if has_game:
+            game_dir = Path(self.project.game_root) / "game"
+            if game_dir.is_dir():
+                existing = {p.stem[len("unren-"):] for p in game_dir.glob("unren-*.rpy")}
+        for key, cb in self._patch_boxes.items():
+            # 已注入的补丁默认勾上，方便用户看到当前状态并直接再次注入/移除
+            if key in existing:
+                cb.setChecked(True)
+        if status is not None:
+            if not has_game:
+                status.setText("（仅游戏目录模式可用）")
+            elif existing:
+                status.setText("已注入：" + "、".join(sorted(existing)))
+            else:
+                status.setText("尚未注入任何补丁")
+
     def _on_unpack(self) -> None:
         if self.deps is None:
             self.deps = self._build_default_deps()
@@ -989,7 +1816,8 @@ class PytranApp:
                                "done": 100, "total": 100})
                 self.on_event("log",
                               {"message": "点「导入」继续（解析刚生成的 rpy）"})
-                self.state.goto(1)
+                # N3：与翻译路径一致——后台线程只发事件，切页由主线程执行（§9 红线）
+                self.on_event("goto_step", {"step": 1})
                 # 解包/反编译在游戏目录里生成了新 .rpy——界面全局刷新一次，
                 # 让目录状态标签、置灰规则、审校列表与磁盘实际状态同步。
                 self.on_event("refresh_all", {})
@@ -1020,6 +1848,7 @@ class PytranApp:
         self._refresh_steps()
         self._refresh_progress()
         self._refresh_tools()
+        self._refresh_patch_ui()
         # 仅当处于审校页（Step 3）时才刷新审校列表，避免工程量大时阻塞启动
         stack = self._widgets.get("stack")
         if stack and stack.currentIndex() == 3:
@@ -1163,11 +1992,21 @@ class PytranApp:
             self._highlight_active_step(target_page)
 
     def _refresh_progress(self) -> None:
+        """按 project 状态刷新进度条与文字（§9：done/total/failed）。
+
+        * 空工程显示 0/0，不用 ``or 1`` 掩饰（问题清单 C2）；
+        * 恢复确定性模式，避免上一次 round 事件留下的 indeterminate
+          状态让 setValue 失效（问题清单 C1）。
+        """
         p = self.state.progress()
+        total = p["total"]
         pb = self._widgets.get("progress")
         if pb is not None:
-            total = p["total"] or 1
-            pb.setValue(int(100.0 * p["done"] / total))
+            self._set_translate_busy(False)
+            if total > 0:
+                pb.setValue(int(100.0 * p["done"] / total))
+            else:
+                pb.setValue(0)
         lbl = self._widgets.get("progress_label")
         if lbl is not None:
             lbl.setText(f"完成 {p['done']}/{p['total']}  失败 {p['failed']}")
@@ -1257,6 +2096,9 @@ class PytranApp:
             self._widgets["btn_retry"].setEnabled(ctrl["retry_failed"])
         if "btn_export_csv" in self._widgets:
             self._widgets["btn_export_csv"].setEnabled(ctrl["export_writeback"])
+        # 翻译页的参数/成本行与按钮 busy 态
+        self._refresh_translate_info()
+        self._refresh_translate_controls()
 
     def _log(self, message: str, level: str = "info") -> None:
         box = self._widgets.get("log")
