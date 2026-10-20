@@ -42,7 +42,7 @@
 |---|---|
 | `old "X"` 后紧跟同级 `new "Y"`（允许空行/注释间隔） | 一条段：source=X，target=Y；Y 非空 → `TRANSLATED`（已有反编译/人工译文，不再机翻），Y 空 → `PENDING` |
 | `old "X"` 无配对 `new` | 旧行为：立一条 PENDING 段 |
-| 孤立 `new "Y"`（无 old） | 不立段（防止译文再度混入待翻队列） |
+| 孤立 `new "Y"`（无 old） | **不立段**（BUGFIX(orphan-new)，见下） |
 | locator | 指向 `new` 行——回写时替换的是 new 的引号内容，符合 Ren'Py 语义 |
 | legacy `old:`/`new:` 子块（分号头形式） | 同样成对：`old:` 体为原文、其后 `new:` 体为译文；孤立 new 体跳过 |
 
@@ -75,6 +75,20 @@ drunk→醉、Rusty small axe→生锈的小斧头）。
 已导入的旧项目 `project.json` 含错误段（中文被当原文），需**重新导入**
 该游戏文件后再翻译。带既有译文的段落导入即 `TRANSLATED`，不会重复消耗
 翻译额度；如需重译可到审校页对该行操作。
+
+## 5b. 追加修复：孤立 new 不立段（BUGFIX(orphan-new)，2026-10-20 复核）
+
+用户复核发现实现与本文档 §3 矛盾：代码注释写「孤立的 new 行——按原文
+导入，维持旧行为」，孤立 `new "Y"` 实际被立为 PENDING 段。
+
+危害评估（用户复核结论，采纳）：孤立 new 的 source 是译文（通常中文），
+立段送翻 = 中文→中文，纯浪费 token 且产出垃圾；「不立段」的风险几乎
+为零——Ren'Py 惯例 `old` 恒在 `new` 前。故按文档改代码：
+
+- `_handle_strings`：孤立 `new "Y"` 跳过，不 `_emit`；文件字节仍全保留
+  （regenerate 原样输出），仅不产出段落。
+- 新增测试 `test_orphan_new_not_emitted`（含字节保留断言）。
+- 回归：366 passed（349 + 新增用例累计）。
 
 ## 6. 影响面
 

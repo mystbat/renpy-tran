@@ -105,6 +105,36 @@ def test_old_new_empty_new_is_pending() -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def test_orphan_new_not_emitted() -> None:
+    """BUGFIX(orphan-new)：孤立 `new "Y"`（无 old 配对）不立段。
+
+    其文本是译文（通常中文），立段送翻 = 中文→中文，纯浪费 token；
+    文档 BUGFIX-old-new-pair §3 与实现曾各执一词，按文档改代码
+    （用户复核 2026-10-20）。文件其余部分字节保留，仅不产出段落。
+    """
+    work = FIXTURES.parent / ".tmp_fix_old_new"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        f = work / "orphan_new.rpy"
+        f.write_text(
+            'translate chinese strings:\n\n'
+            '    new "孤立的中文"\n',
+            encoding="utf-8",
+        )
+        segments = RenpyParser().parse_file(f, game_relpath="orphan_new.rpy")
+        assert segments == []
+        # 字节保留：regenerate 原样返回（write_text 落盘 CRLF / read_text
+        # 万能换行读回 LF，两侧归一到 LF 比较）
+        parser = RenpyParser()
+        parser.parse_file(f, game_relpath="orphan_new.rpy")
+        project = build_project([])
+        out = parser.regenerate(project, "orphan_new.rpy")
+        assert out.replace("\r\n", "\n") == f.read_text(encoding="utf-8")
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def test_skipped_block_preserved_and_counted() -> None:
     """skipped 块：字节保留且计一条 SKIPPED 段（设计 §14）。"""
     path = FIXTURES / "skipped_block.rpy"
