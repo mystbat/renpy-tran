@@ -296,9 +296,30 @@ def _parse_json_array(raw: str) -> "list[tuple[int, str, object]] | None":
     换行缩进）——逐行解析全部失败，但整体是合法 JSON。此层在逐行之前尝试，
     成功则整批回收，避免整批 ProtocolError（用户实测 2026-10-20）。
     只接受「数组且元素为含 i/t 的对象」；其余返回 None 走逐行路径。
+
+    BUGFIX(layer0-fence)：先剥代码栅栏再判定。实测（2026-10-20 第二例）：
+    模型输出 ```json + 无 [ ] 包裹的多行对象流，`raw.startswith` 看到的是
+    围栏字符直接返回 None；逐行层又把对象内部碎成 `{`/`"i": 1,` 等废行，
+    三层全灭 → 整批 ProtocolError。此处先去掉围栏行/单行围栏再试。
     """
     import json
-    stripped = raw.strip()
+    import re as _re
+
+    text = raw.strip()
+    # 顶部/底部独立围栏行（```json ... ```）
+    fence_line = _re.compile(r"^```[A-Za-z0-9_+\-]*\s*$")
+    if fence_line.match(text.splitlines()[0] if text else ""):
+        text = "\n".join(text.splitlines()[1:]).strip()
+    if fence_line.match(text.splitlines()[-1] if text else ""):
+        text = "\n".join(text.splitlines()[:-1]).strip()
+    # 单行围栏包裹（```json {...} ```）
+    inline = _re.match(
+        r"^```[A-Za-z0-9_+\-]*\s*(.*?)\s*```$", text, _re.DOTALL
+    )
+    if inline is not None:
+        text = inline.group(1).strip()
+
+    stripped = text
     if not stripped.startswith("["):
         # 模型常见变体：逗号分隔的对象但无 [ ] 包裹 → 包上再试
         if stripped.startswith("{") and stripped.endswith("}"):
@@ -309,7 +330,6 @@ def _parse_json_array(raw: str) -> "list[tuple[int, str, object]] | None":
         arr = json.loads(stripped)
     except (ValueError, TypeError):
         # 容忍数组末尾多余逗号: "[...},]" → 去掉再试
-        import re as _re
         cleaned = _re.sub(r",\s*\]", "]", stripped)
         try:
             arr = json.loads(cleaned)
