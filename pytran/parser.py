@@ -359,11 +359,15 @@ class RenpyParser:
                         )
                     i += 1 if new_idx is None else new_idx - i + 1
                     continue
-                # BUGFIX(orphan-new)：孤立的 new 行（无 old 配对）——不立段。
-                # 其文本是译文（通常中文），立段送翻 = 中文→中文，纯浪费
-                # token 且产出垃圾（用户复核 2026-10-20：实现与文档
-                # BUGFIX-old-new-pair §3 各执一词，按文档改代码）。
-                # Ren'Py 惯例 old 恒在 new 前，孤立 new 实际不会出现。
+                # BUGFIX(orphan-new)：孤立的 new 行（无 old 配对）→ 补一条
+                # 空 old 与它配对（用户裁决 2026-10-20）：立一条段，
+                # source=""（占位）、target=Y、TRANSLATED——保持 old/new
+                # 配对形态，Y 的文本在 regenerate 时原位写回 new 行，
+                # 不进待翻队列（避免中文→中文浪费 token）。
+                self._emit_old_new_pair(
+                    segments, i, i, source="", new_text=pm.group("text"),
+                    feature=feature,
+                )
                 i += 1
                 continue
             if _is_string_body(cur):

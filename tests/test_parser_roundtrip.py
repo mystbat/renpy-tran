@@ -105,12 +105,11 @@ def test_old_new_empty_new_is_pending() -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def test_orphan_new_not_emitted() -> None:
-    """BUGFIX(orphan-new)：孤立 `new "Y"`（无 old 配对）不立段。
+def test_orphan_new_paired_with_empty_old() -> None:
+    """BUGFIX(orphan-new)：孤立 `new "Y"`（无 old 配对）→ 补一条空 old 配对。
 
-    其文本是译文（通常中文），立段送翻 = 中文→中文，纯浪费 token；
-    文档 BUGFIX-old-new-pair §3 与实现曾各执一词，按文档改代码
-    （用户复核 2026-10-20）。文件其余部分字节保留，仅不产出段落。
+    用户裁决 2026-10-20：不丢弃、也不立为待翻段——立一条段 source=""（占位）、
+    target=Y、TRANSLATED，保持 old/new 配对形态；Y 原位写回 new 行。
     """
     work = FIXTURES.parent / ".tmp_fix_old_new"
     work.mkdir(parents=True, exist_ok=True)
@@ -122,12 +121,17 @@ def test_orphan_new_not_emitted() -> None:
             encoding="utf-8",
         )
         segments = RenpyParser().parse_file(f, game_relpath="orphan_new.rpy")
-        assert segments == []
-        # 字节保留：regenerate 原样返回（write_text 落盘 CRLF / read_text
-        # 万能换行读回 LF，两侧归一到 LF 比较）
+        assert len(segments) == 1
+        seg = segments[0]
+        assert seg.source == ""          # 空 old 占位
+        assert seg.target == "孤立的中文"  # Y 是已有译文
+        assert seg.status == SegmentStatus.TRANSLATED
+        assert seg.locator.endswith(":3")  # 指向 new 行
+        # 字节保留：target 原位写回 new 行（write_text 落盘 CRLF，
+        # read_text 万能换行读回 LF，两侧归一到 LF 比较）
         parser = RenpyParser()
         parser.parse_file(f, game_relpath="orphan_new.rpy")
-        project = build_project([])
+        project = build_project(segments)
         out = parser.regenerate(project, "orphan_new.rpy")
         assert out.replace("\r\n", "\n") == f.read_text(encoding="utf-8")
     finally:
