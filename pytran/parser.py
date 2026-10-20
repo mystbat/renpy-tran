@@ -118,6 +118,39 @@ def _is_string_body(line: str) -> bool:
     return s.count(s[0]) == 2
 
 
+def _body_owner(
+    lines: list[str], body_idx: int, base_indent: int
+) -> str:
+    """返回字符串体所属的 legacy 子块头（"old" / "new" / ""）。
+
+    从 body 行向上扫，找到第一个缩进等于 ``base_indent`` 的非空行——
+    即该字符串体所在子块的头（``old:`` 或 ``new:``）。找不到返回 ""。
+    （BUGFIX(old-new-pair) 配套。）
+    """
+    i = body_idx - 1
+    while i >= 0:
+        cur = lines[i]
+        if not cur.strip():
+            i -= 1
+            continue
+        ind = len(cur) - len(cur.lstrip())
+        if ind < base_indent:
+            m = _OLD_NEW_HEADER_RE.match(cur)
+            if m is not None and ind + 4 >= base_indent:
+                return m.group("kind")
+            break
+        i -= 1
+    return ""
+
+
+def _body_belongs_to_old(lines: list[str], body_idx: int, base_indent: int) -> bool:
+    return _body_owner(lines, body_idx, base_indent) == "old"
+
+
+def _body_belongs_to_new(lines: list[str], body_idx: int, base_indent: int) -> bool:
+    return _body_owner(lines, body_idx, base_indent) == "new"
+
+
 def _replace_dialogue(line: str, new_text: str) -> str:
     """Replace the dialogue text of *line* with *new_text*, preserving the
     role prefix, quote style and trailing suffix byte-for-byte (设计 §6.1)."""
@@ -250,8 +283,17 @@ class RenpyParser:
                 continue
             lm = _LINK_RE.match(cur)
             if lm is not None:
-                # `old "..."` carries the source string; `link` is a reference.
+                # `old "X"` 携带原文；紧跟的 `new "Y"` 是已有译文（成对导入，
+                # 见 BUGFIX(old-new-pair)）。`link` 是引用，跳过。
                 if lm.group("kind") == "old":
+                    new_text, new_idx = self._peek_new_pair(lines, i, indent)
+                    if new_idx is not None:
+                        self._emit_old_new_pair(
+                            segments, i, new_idx, source=lm.group("text"),
+                            new_text=new_text, feature=feature,
+                        )
+                        i = new_idx + 1
+                        continue
                     self._emit(
                         segments, i, source=lm.group("text"), feature=feature,
                         kind="dialogue", comment=f'# "{lm.group("text")}"',
@@ -297,10 +339,30 @@ class RenpyParser:
                 continue
             pm = _OLD_NEW_PAIR_RE.match(cur)
             if pm is not None:
-                text = pm.group("text")
+                # BUGFIX(old-new-pair): `old "X"` / `new "Y"` 是一对——old 是
+                # 原文，new 是已有译文。此前把两行各自立段，导致中文译文被
+                # 当作新的待翻原文（用户实测 2026-10：uid2 = "奥斯瓦尔德的剑"
+                # 被送去再翻译）。此处成对消费：old 立段，new 作为 target；
+                # new 为空 → PENDING；new 非空 → TRANSLATED。
+                new_text, new_idx = self._peek_new_pair(lines, i, indent)
+                if pm.group("kind") == "old":
+                    if new_idx is not None:
+                        self._emit_old_new_pair(
+                            segments, i, new_idx, source=pm.group("text"),
+                            new_text=new_text, feature=feature,
+                        )
+                    else:
+                        self._emit(
+                            segments, i, source=pm.group("text"), feature=feature,
+                            kind="strings", comment=f'# "{pm.group("text")}"',
+                            role="",
+                        )
+                    i += 1 if new_idx is None else new_idx - i + 1
+                    continue
+                # 孤立的 new 行（前面没有 old）——按原文导入，维持旧行为
                 self._emit(
-                    segments, i, source=text, feature=feature, kind="strings",
-                    comment=f'# "{text}"', role="",
+                    segments, i, source=pm.group("text"), feature=feature,
+                    kind="strings", comment=f'# "{pm.group("text")}"', role="",
                 )
                 i += 1
                 continue
@@ -336,6 +398,51 @@ class RenpyParser:
             i += 1
         return None, i
 
+    def _peek_new_pair(
+        self, lines: list[str], old_idx: int, old_indent: int
+    ) -> tuple[str, int | None]:
+        """在 `old "X"` 行之后找同级的 `new "Y"` 行（BUGFIX(old-new-pair)）。
+
+        允许中间隔空行/注释；遇到缩进 ≤ old 缩进的非空行视为配对结束。
+        返回 `(译文, new 行号)`；找不到返回 `("", None)`。
+        """
+        i = old_idx + 1
+        n = len(lines)
+        while i < n:
+            cur = lines[i]
+            if not cur.strip() or cur.lstrip().startswith("#"):
+                i += 1
+                continue
+            if (len(cur) - len(cur.lstrip())) <= old_indent:
+                break
+            m = _OLD_NEW_PAIR_RE.match(cur)
+            if m is not None and m.group("kind") == "new":
+                return m.group("text"), i
+            break
+        return "", None
+
+    def _emit_old_new_pair(
+        self,
+        segments: list[Segment],
+        old_idx: int,
+        new_idx: int,
+        source: str,
+        new_text: str,
+        feature: str,
+    ) -> None:
+        """`old/new` 一对只立一条段；locator 指向 new 行（回写替换目标）。
+
+        new 有内容 → TRANSLATED（已带人工/反编译译文，不再机翻）；
+        new 为空   → PENDING（正常待译）。
+        """
+        target = new_text.strip()
+        self._emit(
+            segments, new_idx, source=source, feature=feature, kind="strings",
+            comment=f'# "{source}"', role="",
+            status=SegmentStatus.TRANSLATED if target else SegmentStatus.PENDING,
+            target=target or None,
+        )
+
     def _handle_legacy_old_new_body(
         self,
         lines: list[str],
@@ -355,6 +462,34 @@ class RenpyParser:
                 break
             if _is_string_body(cur):
                 text = cur.strip()[1:-1]
+                # BUGFIX(old-new-pair)：legacy `old:`/`new:` 子块——`old:` 块
+                # 的字符串体是原文，其后紧跟的 `new:` 块体是已有译文；成对
+                # 消费，避免把译文当原文再立段。此处理解为：字符串体属于
+                # `old:` 还是 `new:` 由其头行决定（向上找最近的子块头）。
+                if not _body_belongs_to_old(lines, i, base_indent):
+                    i += 1  # 孤立 new 体（无 old 配对）不立段，避免误译
+                    continue
+                new_text, new_idx = "", None
+                j = i + 1
+                while j < n:
+                    nxt = lines[j]
+                    if not nxt.strip():
+                        j += 1
+                        continue
+                    if _is_string_body(nxt) and _body_belongs_to_new(lines, j, base_indent):
+                        new_text, new_idx = nxt.strip()[1:-1], j
+                    break
+                if new_idx is not None:
+                    target = new_text.strip()
+                    self._emit(
+                        segments, new_idx, source=text, feature=feature,
+                        kind="strings", comment=f'# "{text}"', role="",
+                        status=(SegmentStatus.TRANSLATED if target
+                                else SegmentStatus.PENDING),
+                        target=target or None,
+                    )
+                    i = new_idx + 1
+                    continue
                 self._emit(
                     segments, i, source=text, feature=feature, kind="strings",
                     comment=f'# "{text}"', role="",
@@ -374,6 +509,7 @@ class RenpyParser:
         comment: str,
         role: str,
         status: SegmentStatus = SegmentStatus.PENDING,
+        target: str | None = None,
     ) -> None:
         segments.append(
             Segment(
@@ -385,7 +521,7 @@ class RenpyParser:
                 comment=comment,
                 role=role,
                 source=source,
-                target=None,
+                target=target,
                 status=status,
                 attempts=0,
                 error=None,

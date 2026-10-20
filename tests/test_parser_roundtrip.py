@@ -49,14 +49,60 @@ def test_parser_roundtrip_byte_exact(name: str) -> None:
 
 @pytest.mark.parametrize("name", PARSE_CASES)
 def test_parse_emits_only_translatable_or_skipped(name: str) -> None:
-    """每个样例应解析出段；dialogue/strings 为 pending，未知块为 skipped。"""
+    """每个样例应解析出段；dialogue/strings 为 pending，未知块为 skipped。
+
+    BUGFIX(old-new-pair)：带已有译文的 `old/new` 对导入为 TRANSLATED。
+    """
     path = FIXTURES / name
     segments = RenpyParser().parse_file(path)
     assert segments, f"{name} 未解析出任何段"
     for s in segments:
-        assert s.status in (SegmentStatus.PENDING, SegmentStatus.SKIPPED)
+        assert s.status in (
+            SegmentStatus.PENDING,
+            SegmentStatus.SKIPPED,
+            SegmentStatus.TRANSLATED,
+        )
         assert s.uid >= 1
         assert s.locator.startswith("# game/")
+
+
+def test_old_new_pair_not_double_counted() -> None:
+    """BUGFIX(old-new-pair)：`old "X"`/`new "Y"` 必须合成一条段——
+    new 的中文不能被当作新的待翻原文（用户实测：uid2 = "奥斯瓦尔德的剑"
+    被送去再翻译，预览面板显示错位）。"""
+    path = FIXTURES / "strings_old_new.rpy"
+    segments = RenpyParser().parse_file(path)
+    # 两对 old/new → 只立 2 条段（旧实现是 4 条）
+    assert len(segments) == 2
+    by_src = {s.source: s for s in segments}
+    assert set(by_src) == {"I am fine.", "See you tomorrow."}
+    for s in segments:
+        assert s.status == SegmentStatus.TRANSLATED
+        assert s.target in ("我很好。", "明天见。")
+        # locator 指向 new 行（行号 5/10），回写替换的是 new 的引号内容
+        assert s.locator.endswith((":5", ":10"))
+
+
+def test_old_new_empty_new_is_pending() -> None:
+    """`new ""`（未翻译模板）→ PENDING，可正常送翻。"""
+    import tempfile
+    work = FIXTURES.parent / ".tmp_fix_old_new"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        f = work / "empty_new.rpy"
+        f.write_text(
+            'translate chinese strings:\n\n'
+            '    old "Hello"\n    new ""\n',
+            encoding="utf-8",
+        )
+        segments = RenpyParser().parse_file(f, game_relpath="empty_new.rpy")
+        assert len(segments) == 1
+        assert segments[0].source == "Hello"
+        assert segments[0].status == SegmentStatus.PENDING
+        assert not segments[0].target
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def test_skipped_block_preserved_and_counted() -> None:
