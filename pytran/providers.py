@@ -20,7 +20,17 @@ from pytran.protocol import build_messages, build_request_params, parse_response
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["OpenAIProvider"]
+__all__ = ["OpenAIProvider", "TERM_EXTRACT_SYSTEM_PROMPT"]
+
+# 术语抽取的信号 C 用的系统提示（W5c §2 信号源 C）：只要名字，不要解释。
+TERM_EXTRACT_SYSTEM_PROMPT = (
+    "You extract proper nouns from game text. Reply with one name per line, "
+    "nothing else."
+)
+
+# 信号 C 的采样/超时口径（W5c §2：最多 1 次/次抽取、timeout 60s）。
+TERM_EXTRACT_MAX_TOKENS = 512
+TERM_EXTRACT_TIMEOUT = 60.0
 
 # §4.3 退避序列（指数 2s/4s/8s）
 BACKOFF_BASE = 2.0
@@ -43,6 +53,45 @@ class OpenAIProvider:
         self._client = client
         if self._client is None:
             self._client = self._build_client(config)
+
+    # -- 通用文本补全（非 Provider 契约） -------------------------------------
+    def complete_text(self, prompt: str, system: str = "") -> str:
+        """一次性文本补全（不走 JSONL 协议，W5c §2 信号源 C 用）。
+
+        与 ``translate_batch`` 复用同一 client / 超时 / 脱敏口径，但：
+        - 不经过 ``protocol`` 的 JSONL 解析（返回的是纯文本名字列表）；
+        - 单次调用、**不重试**（信号 C 是增益不是依赖，失败即静默跳过）；
+        - ``max_tokens`` 收紧到 512（名字列表不需要长输出）。
+
+        任何失败都抛 ``ProviderError``——调用方（``terms._ai_candidates``）
+        负责吞掉，不让它成为抽取失败的原因。
+        """
+        prompt = str(prompt or "")
+        if not prompt.strip():
+            return ""
+        self._require_api_key()
+        messages: list[dict[str, str]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        # 主模型未配置时退到 fallback_model；两者都空则由服务端报错上抛。
+        model = self._config.model or self._config.fallback_model
+        params: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": TERM_EXTRACT_MAX_TOKENS,
+            "timeout": TERM_EXTRACT_TIMEOUT,
+        }
+        logger.debug("术语抽取请求（prompt %d 字符）", len(prompt))
+        try:
+            response = self._client.chat.completions.create(**params)
+        except Exception as exc:  # noqa: BLE001 - 统一转为 ProviderError
+            raise ProviderError(
+                f"术语抽取调用失败：{type(exc).__name__}"
+            ) from exc
+        content = self._extract_content(response)
+        logger.debug("术语抽取响应预览：%s", self._preview(content))
+        return content
 
     # -- 契约方法（interfaces.Provider） --------------------------------------
     def translate_batch(

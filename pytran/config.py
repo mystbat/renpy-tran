@@ -14,6 +14,26 @@ from typing import Optional
 CONFIG_ENV_KEY = "TL_API_KEY"
 DEFAULT_CONFIG_NAME = "config.ini"
 
+# configparser BOOLEAN_STATES 口径（getboolean 的合法取值）。
+_TRUE_STRINGS = {"1", "yes", "true", "on"}
+_FALSE_STRINGS = {"0", "no", "false", "off"}
+
+
+def _coerce_bool(value, default: bool = False) -> bool:
+    """把 ini 字符串 / 任意值收敛成 bool；无法识别时返回 ``default``。"""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in _TRUE_STRINGS:
+        return True
+    if text in _FALSE_STRINGS:
+        return False
+    return default
+
 _DEFAULT_INI = """[API]
 url = https://api.siliconflow.cn/v1
 api_key =
@@ -39,6 +59,9 @@ language = chinese
 context_lines = 3
 block_lines = 30
 renpy_sdk_dir =
+
+[Terms]
+term_extract_use_ai = true
 """
 
 _INI_SECTION_MAP: dict[tuple[str, str], str] = {
@@ -60,6 +83,7 @@ _INI_SECTION_MAP: dict[tuple[str, str], str] = {
     ("Game", "context_lines"): "context_lines",
     ("Game", "block_lines"): "block_lines",
     ("Game", "renpy_sdk_dir"): "renpy_sdk_dir",
+    ("Terms", "term_extract_use_ai"): "term_extract_use_ai",
 }
 
 
@@ -85,6 +109,7 @@ class Config:
     block_lines: int = 30                # §4.1 切块大小（行/块）
     language: str = "chinese"            # tl 目录语言名（§8.3）
     renpy_sdk_dir: str = ""              # §8.5；空 = 未配置
+    term_extract_use_ai: bool = True     # W5c §2 信号源 C：AI 辅助识别术语
     profile_path: str = "profile.json"   # §7.2
     work_dir: str = "."                  # 工作目录（§2.2）
 
@@ -151,6 +176,10 @@ class Config:
                 setattr(self, float_attr, float(getattr(self, float_attr)))
             except (TypeError, ValueError):
                 pass
+        # 布尔字段：ini 里写的是字符串，按 configparser 语义取真值集
+        # （configparser 的 getboolean 接受 1/yes/true/on；这里保持同等口径）。
+        self.term_extract_use_ai = _coerce_bool(
+            getattr(self, "term_extract_use_ai", True), default=True)
 
 
 @dataclass

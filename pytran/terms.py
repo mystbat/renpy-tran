@@ -8,11 +8,16 @@
 数据契约见 ``pytran.config.TermProfile``（T0 冻结，勿改）：
 ``terms: dict[str,str]`` / ``exempt_english: list[str]`` /
 ``prompt_overrides: dict[str,str]``（有效键 ``system_append``）。
+
+W5c 重做（``docs/W5c-术语抽取重做.md``）：候选抽取不再做自然语言句子上的
+1~3 词大写滑窗统计（产出的全是句首词与碎片），改为四信号源按可靠性排序——
+A ``Character`` 定义 / D ``Segment.role`` / B ``old`` 短串 / C AI 识别。
 """
 from __future__ import annotations
 
 import re
 from collections import Counter
+from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 from pytran.config import TermProfile
@@ -25,20 +30,84 @@ __all__ = [
     "detect_duplicate_originals",
     "apply_terms",
     "Candidate",
+    "SOURCE_CHARACTER",
+    "SOURCE_ROLE",
+    "SOURCE_OLD_STRING",
+    "SOURCE_AI",
+    "CHAR_DEF_RE",
 ]
 
+# ---------------------------------------------------------------------------
+# W5c 重做：权威定义优先，模型辅助（docs/W5c-术语抽取重做.md §2/§7）
+#
+# 旧实现在自然语言句子上做 1~3 词大写滑窗统计，产出的全是句首词与碎片；
+# 新版改用四个信号源，按可靠性排序：
+#   A  define x = Character("Name")   —— 权威定义，扫 game/**/*.rpy
+#   D  Segment.role                  —— 解析器已拆出的说话人名（结构信号）
+#   B  old "X" 短串（kind="strings"）—— 作者显式声明的可翻译单元
+#   C  AI 识别                       —— 需在 source 中实际出现 >=2 次
+# ---------------------------------------------------------------------------
+
+# 信号源标记（候选弹窗「来源」列展示用）。
+SOURCE_CHARACTER = "A"   # define x = Character("...")
+SOURCE_ROLE = "D"        # Segment.role（对话行前缀的说话人名）
+SOURCE_OLD_STRING = "B"  # old "X" 短串（kind == "strings"）
+SOURCE_AI = "C"          # AI 识别（受出现次数校验）
+
 # 一个「词」：拉丁/扩展字母开头的字母数字串（含 ' 与 -）。
+# 仅用于信号 C 的 source 词频索引（校验 AI 返回词是否真的出现过）。
 _WORD_RE = re.compile(r"[A-Za-zÀ-ɏ][A-Za-zÀ-ɏ'’\-]*")
 
-# 候选词组最长词数（§4：1~3 词连续大写开头）。
-_MAX_SPAN = 3
+# 来源优先级：A > D > B > C（W5c §7.6）。撞名时取最可靠来源。
+_SOURCE_RANK = {
+    SOURCE_CHARACTER: 0,
+    SOURCE_ROLE: 1,
+    SOURCE_OLD_STRING: 2,
+    SOURCE_AI: 3,
+}
 
-# 入选阈值：dialogue 候选须出现 ≥3 次（§4「多段出现 ≥3 次入选」）。
-_MIN_COUNT = 3
+# 信号 A：Ren'Py 角色定义（W5c §2 信号源 A）。
+# 覆盖 `define x = Character("N")`（最常见）与 `define x = Character(_("N"))`；
+# DynamicCharacter 不匹配（动态名，宁缺勿滥）。
+# 注意：任务书原稿的 `_?\(` 把最常见的无包装形态漏掉了——`_` 与 `(` 必须
+# 作为**一组**整体可选，否则 `Character("Horos")` 匹配不到。
+CHAR_DEF_RE = re.compile(
+    r'^\s*define\s+\w+\s*=\s*Character\(\s*(?:_\(\s*)?"(?P<name>[^"]+)"',
+)
 
+# 信号 D：role 入选下限。role 是结构信号，出现 1 次即可信；
+# 仅要求它看起来像个名字而不是句子。
+_ROLE_MIN_LEN = 2
+_ROLE_MAX_LEN = 24
+_ROLE_MAX_WORDS = 4
 
-def _is_capitalized(token: str) -> bool:
-    return bool(token) and token[:1].isupper()
+# 信号 B：`old "X"` 短串阈值（W5c §2 信号源 B + §7.3 收紧）。
+_OLD_STRING_MAX_LEN = 24
+_OLD_STRING_MAX_WORDS = 3
+
+# 信号 C：AI 返回词必须在 source 中实际出现的次数（防幻觉）。
+_AI_MIN_OCCURRENCES = 2
+# 送模型的采样行数（W5c §2：随机采样 200 行）。
+_AI_SAMPLE_LINES = 200
+# 送模型的单行长度上限（避免把整篇原文灌进去）。
+_AI_SAMPLE_MAX_CHARS = 6000
+
+# Ren'Py 引擎内置 role 名（00definitions.rpy L436-441 / 00nvl_mode.rpy L436-445）。
+# 解析器会把它们原样收进 Segment.role，属纯噪声，必须剔除。
+_ENGINE_ROLES = frozenset({
+    "narrator", "centered", "vcentered", "thought", "nvl", "nvl_narrator",
+    "adv", "name_only", "say", "say-centered",
+})
+
+# 常见非术语虚词：role/old 短串里偶尔出现的功能词，单独成词时无意义。
+_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "but", "if", "of", "to", "in", "on",
+    "at", "by", "for", "with", "from", "as", "is", "are", "was", "were",
+    "be", "been", "it", "its", "this", "that", "these", "those", "you",
+    "your", "we", "our", "they", "their", "he", "she", "his", "her",
+    "not", "no", "yes", "so", "then", "than", "there", "here", "when",
+    "what", "who", "how", "all", "any", "can", "will", "would", "may",
+})
 
 
 def _has_english(text: str) -> bool:
@@ -47,127 +116,242 @@ def _has_english(text: str) -> bool:
 
 
 class Candidate:
-    """一个抽取出的候选术语（§4 输出）。"""
+    """一个抽取出的候选术语（W5c §3 输出）。"""
 
-    __slots__ = ("term", "count")
+    __slots__ = ("term", "count", "source")
 
-    def __init__(self, term: str, count: int) -> None:
+    def __init__(self, term: str, count: int, source: str = SOURCE_ROLE) -> None:
         self.term = term
         self.count = count
+        self.source = source
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
-        return f"Candidate({self.term!r}, {self.count})"
+        return f"Candidate({self.term!r}, {self.count}, {self.source!r})"
 
     def __eq__(self, other: object) -> bool:
         return (
             isinstance(other, Candidate)
             and self.term == other.term
             and self.count == other.count
+            and self.source == other.source
         )
 
+    def __hash__(self) -> int:  # noqa: D105 - 与 __eq__ 配套
+        return hash((self.term, self.count, self.source))
 
-_STRINGS_MAX_LEN = 24   # 整句候选的最大长度（更长的整句做术语无意义）
+
+# ---------------------------------------------------------------------------
+# 信号源 A：Ren'Py 角色定义
+# ---------------------------------------------------------------------------
+
+def _iter_script_dirs(game_root: str | Path | None, language: str = "") -> list[Path]:
+    """定位可扫的 rpy 源码目录（W5c §7.2 降级链）。
+
+    顺序：`game/`（原始脚本，含反编译产物）→ `game/tl/<language>`（tl 里的
+    `old "X"`）。反编译默认落在 rpyc 同目录（`unren.decompile` 的
+    `out_dir=rpyc.parent`），所以 `game/` 下通常已有解出的 `.rpy`。
+    解包前（只有 rpyc）两个目录都不含可扫文本，信号 A 自然为空——
+    这是预期行为，不是缺陷。
+    """
+    if not game_root:
+        return []
+    root = Path(game_root)
+    if not root.is_dir():
+        return []
+    dirs: list[Path] = []
+    game = root / "game"
+    if game.is_dir():
+        dirs.append(game)
+        if language:
+            tl = game / "tl" / language
+            if tl.is_dir():
+                dirs.append(tl)
+    return dirs
 
 
-def _strings_candidates(sources: Iterable[str]) -> Counter:
-    """``kind="strings"`` 段候选。
+def _character_candidates(
+    game_root: str | Path | None,
+    language: str = "",
+) -> Counter:
+    """信号 A：扫 `game/**/*.rpy` 里的 `define x = Character("Name")`。
 
-    DECISION(§4 改进，用户实测反馈"抽出来几乎没用")：
-    - 整条 source 仅当长度 <= 40 字符时计入（短标题/角色名短语才有
-      "整体翻译一致"的价值；长句做术语只会浪费 token 并误导模型）；
-    - 同时对 source 做词组抽取（复用对白块逻辑），高频人名/专名
-      不会被整句淹没。
+    只认正则明确命中的形态；`DynamicCharacter` 不匹配（动态名，宁缺勿滥）。
     """
     counts: Counter = Counter()
-    for src in sources:
-        s = (src or "").strip()
-        if not s:
-            continue
-        if len(s) <= _STRINGS_MAX_LEN:
-            counts[s] += 1
-        counts.update(_dialogue_candidates([s]))
-    # 整句候选要求出现 >=2 次（单次出现的句子做术语无意义；
-    # 高频短句才是需要整体翻译一致的对象）
-    return Counter({k: v for k, v in counts.items()
-                    if not (len(k) > 12 and v < 2)})
+    for directory in _iter_script_dirs(game_root, language):
+        # rglob 覆盖子目录；tl 与 game 可能重复命中同名文件，Counter 自然累加。
+        for rpy in sorted(directory.rglob("*.rpy")):
+            try:
+                text = rpy.read_text(encoding="utf-8-sig", errors="replace")
+            except OSError:  # pragma: no cover - 权限/占用
+                continue
+            for line in text.splitlines():
+                m = CHAR_DEF_RE.match(line)
+                if m is None:
+                    continue
+                name = (m.group("name") or "").strip()
+                if _is_valid_term(name):
+                    counts[name] += 1
     return counts
 
 
-def _dialogue_candidates(sources: Iterable[str]) -> Counter:
-    """``kind="dialogue"`` 段：抽取 1~3 词连续大写开头专有名词候选。
+# ---------------------------------------------------------------------------
+# 信号源 D：Segment.role
+# ---------------------------------------------------------------------------
 
-    启发式排错（§4「排除句首普通词」）：一个候选词组**只在每段的开头位置
-    （token 下标恒为 0）出现**时，视为普通句首词而剔除；只有跨段、或在段中
-    部也出现过的才入选。同时须满足总出现次数 ≥ ``_MIN_COUNT``。
+def _role_candidates(segments: Sequence[Segment]) -> Counter:
+    """信号 D：`Segment.role` 就是说话人名（parser `_extract_dialogue` 已拆出）。
+
+    结构信号，非统计启发式：出现 1 次即可信。只要求它「看起来像名字」——
+    2~24 字符、≤4 词、非引擎内置 role、非纯虚词。
     """
     counts: Counter = Counter()
-    # phrase -> 出现过的 token 下标集合（跨段合并，用于判断是否「仅句首」）
-    positions: dict[str, set[int]] = {}
-    for src in sources:
-        toks = _WORD_RE.findall(src or "")
-        n = len(toks)
-        for i in range(n):
-            if not _is_capitalized(toks[i]):
-                continue
-            for length in range(1, _MAX_SPAN + 1):
-                if i + length > n:
-                    break
-                span = toks[i : i + length]
-                if not all(_is_capitalized(t) for t in span):
-                    break
-                phrase = " ".join(span)
-                counts[phrase] += 1
-                positions.setdefault(phrase, set()).add(i)
-    result: Counter = Counter()
-    for phrase, c in counts.items():
-        if c < _MIN_COUNT:
+    for seg in segments:
+        role = (getattr(seg, "role", "") or "").strip()
+        if not _is_valid_term(role):
             continue
-        # 仅在所有出现都位于段首（下标恒为 0）时剔除
-        if positions.get(phrase) == {0}:
+        if len(role) > _ROLE_MAX_LEN:
             continue
-        result[phrase] = c
-    return result
+        if len(role.split()) > _ROLE_MAX_WORDS:
+            continue
+        if role.lower() in _ENGINE_ROLES:
+            continue
+        counts[role] += 1
+    return counts
 
 
-def extract_candidates(
+# ---------------------------------------------------------------------------
+# 信号源 B：old "X" 短串
+# ---------------------------------------------------------------------------
+
+def _old_string_candidates(segments: Sequence[Segment]) -> Counter:
+    """信号 B：`kind == "strings"` 段（源码即作者声明的 `old "X"` 短串）。
+
+    任务书原方案是自行扫 rpy 找 `old`，但 `translate` 块内的 `old` 是上一轮
+    翻译残留（parser L251，多为整句），只有 `strings` 块内的才是术语单元
+    （parser L298）。直接读 segments 不碰磁盘、不重复解析逻辑。
+    """
+    counts: Counter = Counter()
+    for seg in segments:
+        if getattr(seg, "kind", "") != "strings":
+            continue
+        s = (getattr(seg, "source", "") or "").strip()
+        if not _is_old_string_ok(s):
+            continue
+        counts[s] += 1
+    return counts
+
+
+def _is_old_string_ok(text: str) -> bool:
+    """`old "X"` 短串入选条件（W5c §2 信号源 B + §7.3 收紧）。"""
+    s = (text or "").strip()
+    if not s or len(s) > _OLD_STRING_MAX_LEN:
+        return False
+    if not _has_english(s):
+        return False
+    words = s.split()
+    if len(words) > _OLD_STRING_MAX_WORDS:
+        return False
+    # 至少一个词首字母大写：真专名几乎必满足，排除全小写 UI 文案
+    if not any(w[:1].isupper() for w in words if w):
+        return False
+    # 含虚词 → 是句子而非专名（"Click to continue" / "Are you sure?"）
+    return not any(w.lower() in _STOPWORDS for w in words)
+
+
+# ---------------------------------------------------------------------------
+# 信号源 C：AI 识别
+# ---------------------------------------------------------------------------
+
+def _sample_sources(segments: Sequence[Segment], max_lines: int) -> str:
+    """采样对话原文供信号 C 使用（W5c §2：前 N 段 / 随机 200 行）。
+
+    只取 dialogue 段：strings 段是短串、source 里没有上下文可判断专名。
+    按 uid 排序后等距抽样，保证覆盖整个工程而不只取开头。
+    """
+    sources = [
+        (getattr(s, "source", "") or "")
+        for s in segments
+        if getattr(s, "kind", "") == "dialogue" and (getattr(s, "source", "") or "").strip()
+    ]
+    if not sources:
+        return ""
+    if len(sources) > max_lines:
+        step = len(sources) / max_lines
+        sources = [sources[int(i * step)] for i in range(max_lines)]
+    text = "\n".join(sources)
+    return text[:_AI_SAMPLE_MAX_CHARS]
+
+
+_AI_PROMPT = (
+    "下面是一段英文游戏文本。请列出其中出现的所有人名、地名、组织名与"
+    "游戏专有名词（术语），每行一个，只输出名字本身，不要编号、不要解释、"
+    "不要输出普通名词或句子：\n\n"
+)
+
+
+def _ai_candidates(
     segments: Sequence[Segment],
-    profile: TermProfile | None = None,
-    limit: int = 50,
-) -> list[Candidate]:
-    """从工程全部段抽取候选术语（§4）。
+    ai_helper,
+    source_index: Mapping[str, int],
+) -> Counter:
+    """信号 C：AI 识别 + 出现次数校验（防幻觉，W5c §2 信号源 C）。
 
-    流程：字符串段整条计入 + 对白段抽大写词组 → 合并计数 → 过滤
-    （已在 terms / 命中 exempt_english / 纯数字或单字母）→ 降序取前 ``limit``。
+    ``ai_helper`` 需提供 ``complete_text(prompt) -> str``。任何异常都静默
+    吞掉——此信号是增益，不是依赖，不得成为抽取失败的原因。
     """
-    strings_srcs = (s.source for s in segments if getattr(s, "kind", "") == "strings")
-    dialogue_srcs = (s.source for s in segments if getattr(s, "kind", "") == "dialogue")
-
+    if ai_helper is None:
+        return Counter()
+    sample = _sample_sources(segments, _AI_SAMPLE_LINES)
+    if not sample:
+        return Counter()
+    try:
+        raw = ai_helper.complete_text(_AI_PROMPT + sample)
+    except Exception:  # noqa: BLE001 - 超时/无 Key/网络错都静默跳过
+        return Counter()
     counts: Counter = Counter()
-    counts.update(_strings_candidates(strings_srcs))
-    counts.update(_dialogue_candidates(dialogue_srcs))
-
-    existing_terms: Mapping[str, str] = (
-        (profile.terms or {}) if profile is not None else {}
-    )
-    exempt: Iterable[str] = (
-        (profile.exempt_english or []) if profile is not None else []
-    )
-    exempt_set = {str(x) for x in exempt}
-
-    filtered: dict[str, int] = {}
-    for term, c in counts.items():
-        if term in existing_terms or term in exempt_set:
+    for line in str(raw or "").splitlines():
+        word = line.strip().lstrip("-*•\t ").strip()
+        if not _is_valid_term(word):
             continue
-        if _is_pure_digit_or_single_letter(term):
+        if word.lower() in _ENGINE_ROLES:
             continue
-        filtered[term] = c
+        # 必须在工程 source 中实际出现 >= 2 次，否则视为模型编造
+        if source_index.get(word.lower(), 0) < _AI_MIN_OCCURRENCES:
+            continue
+        counts[word] = source_index[word.lower()]
+    return counts
 
-    ordered = sorted(filtered.items(), key=lambda kv: (-kv[1], kv[0]))
-    return [Candidate(term, c) for term, c in ordered[:limit]]
+
+def _build_source_index(segments: Sequence[Segment]) -> dict[str, int]:
+    """source 文本的大小写不敏感词频索引（供信号 C 校验）。"""
+    index: dict[str, int] = {}
+    for seg in segments:
+        for tok in _WORD_RE.findall(getattr(seg, "source", "") or ""):
+            index[tok.lower()] = index.get(tok.lower(), 0) + 1
+    return index
+
+
+# ---------------------------------------------------------------------------
+# 合并与输出
+# ---------------------------------------------------------------------------
+
+def _is_valid_term(term: str) -> bool:
+    """候选是否像术语：非空、非纯数字、非单字母、含英文字母、非纯虚词。"""
+    t = (term or "").strip()
+    if not t:
+        return False
+    if _is_pure_digit_or_single_letter(t):
+        return False
+    if not _has_english(t):
+        return False
+    # 单个虚词（"The" / "And"）不是术语；多词词组允许含虚词
+    # （"Lord of the Rings"），因为 _is_old_string_ok 已在 B 信号里收紧。
+    return t.lower() not in _STOPWORDS
 
 
 def _is_pure_digit_or_single_letter(term: str) -> bool:
-    """纯数字 / 单字母候选跳过（§4）。多词词组不在此列。"""
+    """纯数字 / 单字母候选跳过。多词词组不在此列。"""
     t = (term or "").strip()
     if not t:
         return True
@@ -176,6 +360,107 @@ def _is_pure_digit_or_single_letter(term: str) -> bool:
     if t.isdigit():
         return True
     return False
+
+
+def _merge(
+    signal_counts: Sequence[tuple[str, Counter]],
+) -> dict[str, tuple[int, str]]:
+    """合并多路信号 → ``{小写键: (展示词, count, source)}``。
+
+    - 去重键大小写不敏感，保留**首次**出现的原始大小写作展示（W5c §7.6-1）；
+    - 撞名时按来源优先级取最可靠者（A > D > B > C，W5c §7.6-2），
+      但 count 取各信号最大值——「出现次数」要反映真实热度，不因降级而变小。
+    """
+    merged: dict[str, tuple[str, int, str]] = {}
+    for source, counts in signal_counts:
+        for term, count in counts.items():
+            key = term.lower()
+            if key not in merged:
+                merged[key] = (term, count, source)
+                continue
+            old_term, old_count, old_source = merged[key]
+            new_source = (
+                source if _SOURCE_RANK.get(source, 99)
+                < _SOURCE_RANK.get(old_source, 99) else old_source
+            )
+            merged[key] = (old_term, max(old_count, count), new_source)
+    return merged
+
+
+# 权威信号（A/D）不占 limit；辅助信号（B/C）占 limit（W5c §7.6-3）。
+_AUTHORITATIVE_SOURCES = frozenset({SOURCE_CHARACTER, SOURCE_ROLE})
+
+
+def extract_candidates(
+    segments: Sequence[Segment],
+    profile: TermProfile | None = None,
+    limit: int = 50,
+    game_root: str | Path | None = None,
+    ai_helper=None,
+    language: str = "chinese",
+) -> list[Candidate]:
+    """从工程抽取候选术语（W5c §2/§3：权威定义优先 + 模型辅助）。
+
+    四个信号源按可靠性排序：
+
+    * **A** `define x = Character("N")` —— 扫 `game/**/*.rpy` 权威定义；
+    * **D** `Segment.role` —— 解析器已拆出的说话人名，无需 `game_root`；
+    * **B** `kind == "strings"` 段 —— 作者声明的 `old "X"` 短串；
+    * **C** AI 识别 —— 采样对话送模型，返回词须在 source 中出现 ≥2 次。
+
+    四路信号**全局合并去重**后再分组输出：同一个词不会因为同时被 D 与 C
+    命中而出现两次，最终只保留最可靠的来源。
+
+    ``limit`` 只约束 B/C 候选：A/D 是角色名，通常不足 30 个，**全部展示**，
+    否则 50 个名额会被 B 的短串吃光、挤掉真正的人名（W5c §7.6-3）。
+
+    排序：来源 A → D → B → C，同源按 count 降序、同次数按字典序。
+    已存在于 ``profile.terms`` / ``profile.exempt_english`` 的条目被剔除
+    （大小写不敏感）。
+    """
+    segs = list(segments or [])
+
+    # 全局一次合并：A/D/B/C 四路信号都参与，撞名取最可靠来源。
+    merged = _merge([
+        (SOURCE_CHARACTER, _character_candidates(game_root, language)),
+        (SOURCE_ROLE, _role_candidates(segs)),
+        (SOURCE_OLD_STRING, _old_string_candidates(segs)),
+        (SOURCE_AI, _ai_candidates(
+            segs, ai_helper, _build_source_index(segs))),
+    ])
+
+    existing_terms: Mapping[str, str] = (
+        (profile.terms or {}) if profile is not None else {}
+    )
+    exempt_set = {
+        str(x) for x in ((profile.exempt_english or []) if profile is not None else [])
+    }
+    seen = {str(k).lower() for k in existing_terms}
+    seen |= {x.lower() for x in exempt_set}
+
+    authoritative: list[Candidate] = []
+    auxiliary: list[Candidate] = []
+    for key, (term, count, source) in merged.items():
+        if key in seen:
+            continue
+        cand = Candidate(term, count, source)
+        if source in _AUTHORITATIVE_SOURCES:
+            authoritative.append(cand)
+        else:
+            auxiliary.append(cand)
+
+    def _sort_key(c: Candidate):
+        return (_SOURCE_RANK.get(c.source, 99), -c.count, c.term.lower())
+
+    authoritative.sort(key=_sort_key)
+    auxiliary.sort(key=_sort_key)
+
+    if limit <= 0:
+        return []
+    # A/D 全量 + B/C 补足到 limit
+    room = max(0, limit - len(authoritative))
+    return authoritative + auxiliary[:room]
+
 
 
 def profile_to_rows(profile: TermProfile) -> list[tuple[str, str]]:
