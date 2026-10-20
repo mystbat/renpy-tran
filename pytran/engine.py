@@ -59,6 +59,9 @@ class TranslationEngine:
         self.provider = provider
         self.validator = validator
         self.store = store or JsonProjectStore()
+        # 协作式中断标志（§9 停止按钮）。**不在 run() 内重置**——
+        # 否则会吞掉 run() 之前设置的 stop 请求（问题清单 N4/A7）。
+        self._stop_requested = False
 
     # -- 主入口 ---------------------------------------------------------------
     def run(
@@ -84,7 +87,9 @@ class TranslationEngine:
         segmenter = Segmenter(
             max_lines=max(1, int(getattr(config, "block_lines", 30))),
             context_lines=max(0, int(getattr(config, "context_lines", 3))))
-        self._stop_requested = False
+        # 注意：**不**在这里重置 _stop_requested（__init__ 已初始化为 False）。
+        # 若在 run() 前就调了 stop()（用户在「开始」到 worker 真正启动之间的
+        # 窗口点停止），重置会把该请求吃掉，导致整轮翻译照跑（问题清单 N4/A7）。
         round_no = 0
         history: list[str] = []
         prev_key: Optional[str] = None
@@ -100,7 +105,14 @@ class TranslationEngine:
 
         while queue:
             if self._stop_requested:
+                # N4：停止时给出明确终态（已处理/剩余），让用户能区分
+                # 「已排停，正在等当前块跑完」与「按钮没反应」。
                 on_event("log", {"message": "翻译已被用户停止"})
+                on_event("translate_stopped", {
+                    "processed": processed_cumulative,
+                    "remaining": len(queue),
+                    "round": round_no,
+                })
                 break
             round_no += 1
             # (1) 轮数硬上限：无条件终止线，先于一切检测判定（§5.3）
