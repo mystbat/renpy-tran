@@ -105,6 +105,31 @@ def test_old_new_empty_new_is_pending() -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def test_old_new_same_text_is_pending() -> None:
+    """BUGFIX(sdk-template-pending)：`new` 与 `old` 原文相同 → SDK 空模板
+    的未翻译占位（原文复读），不是已译 → PENDING（修复前被误标
+    TRANSLATED）。用户实测 2026-10-21：SDK 重新生成模板后 27 条 strings
+    对全部误标。"""
+    work = FIXTURES.parent / ".tmp_fix_old_new"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        f = work / "same_new.rpy"
+        f.write_text(
+            'translate chinese2 strings:\n\n'
+            '    old "Watch Kara try to eat out Teriania"\n'
+            '    new "Watch Kara try to eat out Teriania"\n',
+            encoding="utf-8",
+        )
+        segments = RenpyParser().parse_file(f, game_relpath="same_new.rpy")
+        assert len(segments) == 1
+        assert segments[0].source == "Watch Kara try to eat out Teriania"
+        assert segments[0].target is None
+        assert segments[0].status == SegmentStatus.PENDING
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def test_dialogue_source_forms() -> None:
     """BUGFIX(unrpyc-translated)+BUGFIX(sdk-template-pending)：四种原文形态。
 

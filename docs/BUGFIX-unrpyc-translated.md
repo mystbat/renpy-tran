@@ -88,6 +88,21 @@
 测试：`test_dialogue_source_forms` 扩为四形态断言（含 1b 回归守卫）。
 回归：**377 passed**。
 
+## 5c. 追加修复：old/new 对的 new=old 同样是空模板占位（2026-10-21 续）
+
+用户复核：修复 5b 后仍有 27 条 TRANSLATED，全部是 `old/new` strings 对
+——SDK 空模板里 `new` 行内容 = `old` 原文（未翻译占位），`_emit_old_new_pair`
+的「new 非空即已译」判定与 5b 的 dialogue 形态 1 犯了同样的错。
+
+修复：`_emit_old_new_pair` 判定改为 **「new 与 old 原文不同且非空才算
+TRANSLATED」**；相同 = 空模板占位 → PENDING。孤立 new（source=""，
+用户裁决形态）不受影响（source 空 → target≠source 恒成立）。
+
+实测：SDK 模板文件最终 **646 段全部 PENDING**（纯未翻译模板的正确状态）。
+
+测试：新增 `test_old_new_same_text_is_pending`（1b 的 strings 版回归
+守卫）。回归：**378 passed**。
+
 ## 6. 用户操作指引
 
 需**重新导入**该游戏文件：旧 project.json 中 646 条假 pending 段将被

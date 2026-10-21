@@ -504,15 +504,18 @@ class RenpyParser:
     ) -> None:
         """`old/new` 一对只立一条段；locator 指向 new 行（回写替换目标）。
 
-        new 有内容 → TRANSLATED（已带人工/反编译译文，不再机翻）；
+        BUGFIX(sdk-template-pending)：new 与 old 原文**相同** → SDK 空模板
+        的未翻译占位（原文复读），不是已译 → PENDING；
+        new 不同且非空 → TRANSLATED（已带人工/反编译译文，不再机翻）；
         new 为空   → PENDING（正常待译）。
         """
         target = new_text.strip()
+        translated = bool(target) and target != source.strip()
         self._emit(
             segments, new_idx, source=source, feature=feature, kind="strings",
             comment=f'# "{source}"', role="",
-            status=SegmentStatus.TRANSLATED if target else SegmentStatus.PENDING,
-            target=target or None,
+            status=SegmentStatus.TRANSLATED if translated else SegmentStatus.PENDING,
+            target=target if translated else None,
         )
 
     def _handle_legacy_old_new_body(
