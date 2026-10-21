@@ -682,8 +682,24 @@ class PytranApp:
         self._widgets["listbox"].currentRowChanged.connect(self._on_list_select)
         splitter.addWidget(self._widgets["listbox"])
         
+        # 右侧：上方显示原文全文（只读），下方显示/编辑译文。
+        # 左侧列表只截取到 30 字，原文过长时在此处看完整内容。
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self._widgets["source_view"] = QTextEdit()
+        self._widgets["source_view"].setReadOnly(True)
+        self._widgets["source_view"].setPlaceholderText(
+            "选择左侧条目后，此处显示原文全文")
+        self._widgets["source_view"].setStyleSheet(
+            "background:#f5f5f5; color:#333; font-size:12px;")
+        right_layout.addWidget(self._widgets["source_view"], stretch=1)
+        
         self._widgets["editor"] = QTextEdit()
-        splitter.addWidget(self._widgets["editor"])
+        right_layout.addWidget(self._widgets["editor"], stretch=2)
+        
+        splitter.addWidget(right_panel)
         splitter.setSizes([300, 800])
         review_layout.addWidget(splitter, stretch=1)
         
@@ -2119,6 +2135,12 @@ class PytranApp:
         if ed is None:
             return
         cur = self.state.current_review()
+        # 右侧上方原文全文：跟随选中条目刷新
+        sv = self._widgets.get("source_view")
+        if sv is not None:
+            sv.clear()
+            if cur is not None:
+                sv.setPlainText(cur.source or "")
         ed.clear()
         if cur is not None:
             ed.setPlainText(cur.target or "")
