@@ -289,6 +289,52 @@ def _decode_escapes(text: str) -> str:
     return "".join(out)
 
 
+def _scavenge_objects(text: str) -> "list[dict] | None":
+    """从文本扫描平衡的 {...} 片段逐个 json.loads（BUGFIX(layer0-scavenger)）。
+
+    处理 strict json 拒绝的三种实测形态：对象流末尾悬空逗号、响应被
+    截断（最后对象不完整）、对象流后附闲话。引号内的括号/转义感知；
+    解析失败的对象跳过（其编号由引擎 missing 逻辑兜底）。至少回收一个
+    含 i/t 的对象才返回列表，否则 None。
+    """
+    import json
+    out: list[dict] = []
+    i, n = 0, len(text)
+    while i < n:
+        start = text.find("{", i)
+        if start < 0:
+            break
+        # 扫描平衡括号：引号内字符与反斜杠转义不计
+        depth, j, in_str = 0, start, False
+        while j < n:
+            ch = text[j]
+            if in_str:
+                if ch == "\\":
+                    j += 2
+                    continue
+                if ch == '"':
+                    in_str = False
+            elif ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        if depth != 0:
+            break  # 截断的未闭合对象——后面不会有更多完整对象
+        try:
+            obj = json.loads(text[start : j + 1])
+        except (ValueError, TypeError):
+            obj = None
+        if isinstance(obj, dict):
+            out.append(obj)
+        i = j + 1
+    return out or None
+
+
 def _parse_json_array(raw: str) -> "list[tuple[int, str, object]] | None":
     """第 0 层：整体 JSON 数组解析。
 
@@ -321,15 +367,23 @@ def _parse_json_array(raw: str) -> "list[tuple[int, str, object]] | None":
 
     stripped = text
     if not stripped.startswith("["):
-        # 模型常见变体：逗号分隔的对象但无 [ ] 包裹 → 包上再试
-        if stripped.startswith("{") and stripped.endswith("}"):
-            stripped = "[" + stripped + "]"
+        # 模型常见变体：逗号分隔的对象但无 [ ] 包裹 → 包上再试。
+        # BUGFIX(layer0-scavenger)：末尾悬空逗号 / 截断 / 末尾闲话会让
+        # `endswith("}")` 失败——不再直接 return None，落入打捞层。
+        if stripped.startswith("{"):
+            stripped = "[" + stripped + ("]" if stripped.endswith("}") else "")
         else:
+            # 首字符既非 [ 也非 { → 不是「第 0 层/逐行层」能整体处理
+            # 的形态（逐行层对闲话包夹的单行 JSON 有效，留给它优先，
+            # 保住 unparsed 诊断记录）；打捞层由 parse_response 在逐行
+            # 层失败后调用（见 _scavenge_fallback）。
             return None
     try:
         arr = json.loads(stripped)
     except (ValueError, TypeError):
-        # 容忍数组末尾多余逗号: "[...},]" → 去掉再试
+        # 容忍数组末尾多余逗号: "[...},]" → 去掉再试；仍失败返回 None，
+        # 交给逐行层；逐行层也全灭时由 parse_response 调打捞层兜底
+        # （BUGFIX(layer0-scavenger)，保住 unparsed 诊断语义）。
         cleaned = _re.sub(r",\s*\]", "]", stripped)
         try:
             arr = json.loads(cleaned)
@@ -337,6 +391,11 @@ def _parse_json_array(raw: str) -> "list[tuple[int, str, object]] | None":
             return None
     if not isinstance(arr, list):
         return None
+    return _collect_objects(arr)
+
+
+def _collect_objects(arr: list) -> "list[tuple[int, str, object]] | None":
+    """把对象列表规整为 `(uid, text, raw_k)` 三元组；无有效对象返回 None。"""
     out: list[tuple[int, str, object]] = []
     for obj in arr:
         if isinstance(obj, dict) and "i" in obj and "t" in obj:
@@ -429,6 +488,14 @@ def parse_response(
                 unparsed.append(line)
             else:
                 parsed.append(item)
+
+    # BUGFIX(layer0-scavenger) 兜底：逐行层也全灭时，做逐对象打捞
+    # （多行展开对象流 + 末尾悬空逗号 / 截断）。单行完整对象走逐行层
+    # 已被回收，此处只影响多行形态；unparsed 诊断记录不受影响。
+    if not parsed:
+        scav = _scavenge_objects(raw)
+        if scav:
+            parsed = _collect_objects(scav) or []
 
     if not parsed:
         raise ProtocolError(f"响应中没有任何可解析的编号行（原始响应前 200 字符：{raw[:200]!r}）")
