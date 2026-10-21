@@ -123,3 +123,37 @@ def test_garbage_still_raises():
     """纯闲话无任何对象 → 仍抛 ProtocolError。"""
     with pytest.raises(ProtocolError):
         parse_response("好的，以下是翻译：完毕。", [1], sources={1: "s"})
+
+
+# ---- BUGFIX(pairs-scavenger)：键值对打捞（用户实测 2026-10-21 第四例）----
+
+_MERGED_BROKEN = '''{
+  "i": 21,
+  "t": "嗯，天啊，我日夜都在想这件事。",
+  "i": 22,
+  "t": "我甚至会比平时多洗几次澡。",
+  "i": 23,
+  "t": "*咽口水* 尽管如此。",
+  "i": 24,
+  "t": *咽口水* 或者我只是来旁观的？
+  "i": 25,
+  "t": "下一行"
+}'''
+_SRC5 = {i: "s" for i in [21, 22, 23, 24, 25]}
+
+
+def test_merged_object_with_bare_value():
+    """整批合并为单个大 JSON 对象（键重复）+ 个别 t 值裸文本未闭合 →
+    键值对打捞回收完好的条目，残缺条进 missing。"""
+    res = parse_response(_MERGED_BROKEN, [21, 22, 23, 24, 25], sources=_SRC5)
+    assert set(res.results) == {21, 22, 23, 25}
+    assert res.results[21].startswith("嗯，天啊")
+    assert 24 in res.missing
+
+
+def test_merged_object_fully_valid():
+    """合并大对象但全部值完好 → 全部回收（无 missing）。"""
+    raw = '{"i": 1, "t": "a", "i": 2, "t": "b"}'
+    res = parse_response(raw, [1, 2], sources={1: "x", 2: "y"})
+    assert res.results == {1: "a", 2: "b"}
+    assert res.missing == []

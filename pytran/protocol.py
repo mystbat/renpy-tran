@@ -67,6 +67,9 @@ KEEP_DECLARE_CUM_MIN_ROWS = 20
 _JSON_LINE_RE = re.compile(r'\{\s*"i"\s*:\s*(\d+)\s*,\s*"t"\s*:\s*"((?:[^"\\]|\\.)*)"')
 # §4.2 第三层：退化成「编号|文本」
 _NUMBERED_RE = re.compile(r"^(\d+)\|(.*)$")
+# "i": <数字> 记录锚（BUGFIX(pairs-scavenger)：合并大对象/失效片段的
+# 键值对切分用，见 _scavenge_pairs）
+_PAIR_ANCHOR_RE = re.compile(r'"i"\s*:\s*(\d+)')
 _FENCE_RE = re.compile(r"^```[A-Za-z0-9_+\-]*$")
 
 _TRUE_VARIANTS = {"1", "true", "yes", "y", "keep", "on", "t"}
@@ -331,8 +334,43 @@ def _scavenge_objects(text: str) -> "list[dict] | None":
             obj = None
         if isinstance(obj, dict):
             out.append(obj)
+        else:
+            # BUGFIX(pairs-scavenger)：对象整体解析失败（实测 2026-10-21
+            # 第四例：模型把整批合并为一个大 JSON 对象 {"i":21,...,"i":22,...}
+            # 键重复 + 个别 t 值裸文本未闭合）→ 从该片段内扫 "i"/"t"
+            # 键值对逐条回收，残缺条跳过。
+            out.extend(_scavenge_pairs(text[start : j + 1]))
         i = j + 1
     return out or None
+
+
+def _scavenge_pairs(fragment: str) -> "list[dict]":
+    """从失效 JSON 片段内扫 `"i": N` / `"t": "..."` 键值对逐条回收。
+
+    实测（2026-10-21 第四例）：整批被合并为单个大对象且个别 t 值是
+    未加引号的裸文本——整体 json.loads 必败（或键覆盖），但片段内大部分
+    键值对结构完好。以 `"i"` 为锚切分记录，`"t"` 值优先取带引号串，
+    取不到（裸文本/残缺）则跳过该条（编号进引擎 missing 兜底）。
+    """
+    import json
+
+    out: list[dict] = []
+    matches = list(_PAIR_ANCHOR_RE.finditer(fragment))
+    for idx, m in enumerate(matches):
+        uid = int(m.group(1))
+        seg_start = m.end()
+        seg_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(fragment)
+        chunk = fragment[seg_start:seg_end]
+        tm = re.search(r'"t"\s*:\s*"((?:[^"\\]|\\.)*)"', chunk)
+        if tm is None:
+            # 无带引号的 t 值（裸文本/残缺）→ 跳过，编号由 missing 兜底
+            continue
+        try:
+            val = json.loads(f'"{tm.group(1)}"')
+        except (ValueError, TypeError):
+            continue
+        out.append({"i": uid, "t": val})
+    return out
 
 
 def _parse_json_array(raw: str) -> "list[tuple[int, str, object]] | None":
@@ -371,6 +409,17 @@ def _parse_json_array(raw: str) -> "list[tuple[int, str, object]] | None":
         # BUGFIX(layer0-scavenger)：末尾悬空逗号 / 截断 / 末尾闲话会让
         # `endswith("}")` 失败——不再直接 return None，落入打捞层。
         if stripped.startswith("{"):
+            # BUGFIX(pairs-scavenger)：合并大对象（键重复 {"i":21,...,
+            # "i":22,...}）经 json.loads 会后者覆盖前者只剩一条——
+            # 检测到多个 "i" 锚时直接键值对切分，不走 strict 解析。
+            # 限定单对象形态（无 `}, {` / `}\n{` 对象边界）：对象流/JSONL
+            # （每行一个对象，携带 k/r 申报字段）必须走原路径，键值对切分
+            # 会丢 k 字段。逗号可有可无（JSONL 对象间无逗号）；引号内文本
+            # 先归零，避免译文里出现 "},{" 误判。
+            unquoted = re.sub(r'"(?:[^"\\]|\\.)*"', '""', stripped)
+            if (len(_PAIR_ANCHOR_RE.findall(stripped)) > 1
+                    and not re.search(r"\}\s*,?\s*\{", unquoted)):
+                return _collect_objects(_scavenge_pairs(stripped))
             stripped = "[" + stripped + ("]" if stripped.endswith("}") else "")
         else:
             # 首字符既非 [ 也非 { → 不是「第 0 层/逐行层」能整体处理
