@@ -98,3 +98,32 @@ def test_chunk_done_updates_main_progress(gui: PytranApp) -> None:
     pb = gui._widgets["progress"]
     gui._apply_event("chunk_done", {"done": 3, "total": 4, "rows": 5})
     assert pb.value() == 75
+
+
+def test_drain_events_final_guard(gui: PytranApp) -> None:
+    """BUGFIX(busy-stuck) 最终防线：round 事件在 finished 之后才被消费
+    （事件乱序/交叠）时，_drain_events 排空后强制恢复确定性——
+    用户实测：工作完成后绿色流动永不停止。"""
+    pb = gui._widgets["progress"]
+    # 正常完成
+    gui._apply_event("translate_finished", {})
+    assert pb.maximum() == 100
+    # 迟到的 round 事件（乱序）把进度条切回 indeterminate
+    gui._apply_event("round", {"round": 2, "queue_size": 5})
+    assert pb.maximum() == 0  # 流动中
+    # 事件排空（_drain_events 的 finally 兜底）→ 恢复
+    gui._drain_events()
+    assert pb.maximum() == 100, "排空后必须恢复确定性模式"
+
+
+def test_drain_guard_does_not_fight_running_translation(gui: PytranApp) -> None:
+    """防线不误伤：翻译进行中（_translating=True）时排空不恢复模式。"""
+    pb = gui._widgets["progress"]
+    gui._translating = True
+    gui._apply_event("round", {"round": 1, "queue_size": 10})
+    assert pb.maximum() == 0
+    gui._drain_events()
+    assert pb.maximum() == 0  # 仍在翻译，保持 indeterminate
+    gui._translating = False
+    gui._drain_events()
+    assert pb.maximum() == 100  # 停止后可恢复

@@ -90,6 +90,8 @@ class PytranApp:
         self._preview_seen = 0
         # R1 试译行数（记住上次选择，避免每次重填）
         self._trial_lines: Optional[int] = None
+        # 审校页：译文框是否存在未保存修改
+        self._review_dirty = False
 
     def on_event(self, name: str, data: dict) -> None:
         self._events.put((name, data or {}))
@@ -101,6 +103,15 @@ class PytranApp:
                 self._apply_event(name, data)
         except queue.Empty:
             pass
+        finally:
+            # BUGFIX(busy-stuck) 最终防线：每轮事件排空后，若不在翻译中
+            # 而主进度条仍处于 indeterminate（流动动画），强制恢复确定性。
+            # 覆盖一切事件交叠/乱序场景（用户实测：工作完成后绿色流动
+            # 永不停止）——终态处理器的收口之外再兜一层。
+            if not self._translating:
+                pb = self._widgets.get("progress")
+                if pb is not None and pb.maximum() == 0 and pb.minimum() == 0:
+                    self._set_translate_busy(False)
 
     def _apply_event(self, name: str, data: dict) -> None:
         if name == "progress":
@@ -594,7 +605,7 @@ class PytranApp:
         
         # 待导入脚本树状/勾选表格
         self._widgets["import_tree"] = QTreeWidget()
-        self._widgets["import_tree"].setHeaderLabels(["选择", "相对路径", "文件大小", "导入状态"])
+        self._widgets["import_tree"].setHeaderLabels(["选择", "相对路径", "文件大小", "导入状态", "翻译状态"])
         self._widgets["import_tree"].header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         import_layout.addWidget(self._widgets["import_tree"], stretch=1)
         
@@ -750,6 +761,7 @@ class PytranApp:
         right_layout.addWidget(self._widgets["source_view"], stretch=1)
         
         self._widgets["editor"] = QTextEdit()
+        self._widgets["editor"].textChanged.connect(self._on_editor_changed)
         right_layout.addWidget(self._widgets["editor"], stretch=2)
         
         splitter.addWidget(right_panel)
@@ -757,12 +769,19 @@ class PytranApp:
         review_layout.addWidget(splitter, stretch=1)
         
         review_btns = QHBoxLayout()
-        btn_accept = QPushButton("a 通过(Ctrl+S)")
+        btn_save = QPushButton("s 保存")
+        btn_save.clicked.connect(self._on_save)
+        btn_accept = QPushButton("a 通过")
         btn_accept.clicked.connect(self._on_accept)
         btn_flag = QPushButton("f 失败")
         btn_flag.clicked.connect(self._on_flag)
+        review_btns.addWidget(btn_save)
         review_btns.addWidget(btn_accept)
         review_btns.addWidget(btn_flag)
+        review_btns.addStretch()
+        self._widgets["review_dirty"] = QLabel("")
+        self._widgets["review_dirty"].setStyleSheet("color:#b03030; font-size:12px;")
+        review_btns.addWidget(self._widgets["review_dirty"])
         review_layout.addLayout(review_btns)
         
         self._widgets["stack"].addWidget(page_review)
@@ -809,10 +828,11 @@ class PytranApp:
 
             _scoped("A", self._on_accept)
             _scoped("F", self._on_flag)
+            _scoped("S", self._on_save)
             _scoped("J", lambda: self._navigate_list(1))
             _scoped("K", lambda: self._navigate_list(-1))
         sc_save = QShortcut(QKeySequence("Ctrl+S"), window)
-        sc_save.activated.connect(self._on_accept)
+        sc_save.activated.connect(self._on_save)
 
         self._refresh_all()
         self._log("就绪。步骤：选择目录 → 导入 → 翻译 → 审校 → 导出写回；API Key 在「⚙ 设置」中填写")
@@ -1346,7 +1366,7 @@ class PytranApp:
         for i in range(tree.topLevelItemCount()):
             it = tree.topLevelItem(i)
             if it.checkState(0) == Qt.CheckState.Checked:
-                path_obj = it.data(0, Qt.ItemDataRole.UserRole)
+                path_obj = it.data(1, Qt.ItemDataRole.UserRole)
                 if path_obj:
                     picked.append(Path(path_obj))
         return picked
@@ -1381,6 +1401,7 @@ class PytranApp:
         self._log(f"工程已清空（原 {reviewed} 条已译/已审校记录一并移除）；"
                   "游戏目录与术语表保留，可重新导入")
         self.state.goto(1)
+        self._written_back_files = set()
         self._refresh_all()
 
     def _import_rpy(self) -> None:
@@ -1759,19 +1780,54 @@ class PytranApp:
 
     def _on_list_select(self, row: int) -> None:
         if row < 0: return
+        # 切换条目前，若有未保存修改先暂存，避免误触丢失译文
+        self._stash_if_dirty()
         self.state._review_index = row
         self._refresh_editor()
+
+    def _on_editor_changed(self) -> None:
+        """译文框内容变化：标记未保存，提示用户。"""
+        self._review_dirty = True
+        lbl = self._widgets.get("review_dirty")
+        if lbl is not None:
+            lbl.setText("● 译文已修改，未保存")
+
+    def _stash_if_dirty(self) -> None:
+        """若存在未保存的译文修改，先落盘再离开当前条目。"""
+        if not getattr(self, "_review_dirty", False):
+            return
+        ed = self._widgets.get("editor")
+        if ed is not None:
+            self.state.save_target(ed.toPlainText())
+        self._clear_dirty()
+
+    def _clear_dirty(self) -> None:
+        self._review_dirty = False
+        lbl = self._widgets.get("review_dirty")
+        if lbl is not None:
+            lbl.setText("")
+
+    def _on_save(self) -> None:
+        """独立「保存」：仅写入译文，不改状态、不跳下一条。"""
+        ed = self._widgets.get("editor")
+        if ed is not None:
+            self.state.save_target(ed.toPlainText())
+        self._clear_dirty()
+        self._log("已保存当前译文。")
 
     def _on_accept(self) -> None:
         # Save before accept
         ed = self._widgets.get("editor")
         if ed:
             self.state.save_target(ed.toPlainText())
+        self._clear_dirty()
         self.state.accept_current()
         self._refresh_review()
         self._navigate_list(1) # Auto move next
 
     def _on_flag(self) -> None:
+        # 失败前也先把未保存的译文修改落盘，避免误触丢失
+        self._stash_if_dirty()
         self.state.flag_failed_current("manual")
         self._refresh_review()
         self._navigate_list(1)
@@ -1945,6 +2001,9 @@ class PytranApp:
         journal = getattr(self.deps, "journal", None)
         try:
             self.deps.exporter.write_back_project(self.project, self.work_dir, journal)
+            # 写回成功：将导入的文件标记为「已翻译」，并刷新导入页状态列。
+            self._written_back_files = {gf.name for gf in self.project.files}
+            self._refresh_import_tree()
             self._log("已事务化写回游戏目录")
         except Exception as exc:
             self._log(f"写回失败：{exc}")
@@ -2073,14 +2132,29 @@ class PytranApp:
             is_imported = rel in imported_files_set
             status_text = "已导入" if is_imported else "未导入"
 
-            item = QTreeWidgetItem(["", rel, sz, status_text])
-            item.setCheckState(0, Qt.CheckState.Checked)
+            # 翻译状态（第 5 列）：导入的文件在写回后标记为「已翻译」，
+            # 否则「未翻译」；未导入的文件显示「-」占位。
+            is_written = rel in self._written_back_files
+            if not is_imported:
+                trans_text = "-"
+            elif is_written:
+                trans_text = "已翻译"
+            else:
+                trans_text = "未翻译"
+
+            item = QTreeWidgetItem(["", rel, sz, status_text, trans_text])
+            # 用户需求：导入页勾选默认全不选（用户按需勾选/用「全选」）。
+            item.setCheckState(0, Qt.CheckState.Unchecked)
             item.setData(1, Qt.ItemDataRole.UserRole, str(p))
 
             if is_imported:
                 item.setForeground(3, QBrush(QColor("#2e7d32")))
             else:
                 item.setForeground(3, QBrush(QColor("#757575")))
+            if trans_text == "已翻译":
+                item.setForeground(4, QBrush(QColor("#2e7d32")))
+            else:
+                item.setForeground(4, QBrush(QColor("#757575")))
             tree.addTopLevelItem(item)
 
         if summary:
@@ -2194,9 +2268,13 @@ class PytranApp:
             sv.clear()
             if cur is not None:
                 sv.setPlainText(cur.source or "")
+        # 载入条目时屏蔽 textChanged，避免把"加载内容"误判为"用户修改"
+        ed.blockSignals(True)
         ed.clear()
         if cur is not None:
             ed.setPlainText(cur.target or "")
+        ed.blockSignals(False)
+        self._clear_dirty()
 
     def _refresh_tools(self) -> None:
         ctrl = self.state.all_controls()

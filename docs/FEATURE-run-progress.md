@@ -66,3 +66,22 @@ chunk_done/progress 因竞态未及时消费）时，indeterminate 永久残留�
 - 仅 UI 层事件处理与新增控件，引擎/协议/解析不动。
 - `_refresh_progress`（工程级刷新，导入/清空等场景触发）不触碰细条——
   细条只由翻译事件管理，避免「清空工程把运行中的细条藏掉」这类越权。
+
+## 5. 追加修复：排空兜底防线（2026-10-21 复核）
+
+用户复核：修复 §1 后**正常完成**后进度条仍永久流动。序列复现（离屏 GUI
+逐事件断言）显示当前终态收口在**正常事件顺序**下有效；流动残留只能
+来自**事件乱序/交叠**——迟到的 `round` 事件在 `translate_finished` 之后
+才被主线程消费，把进度条重新切回 indeterminate，此后再无事件跟进。
+
+修复（防御纵深第 3 层）：`_drain_events` 每轮事件排空后检查——
+`_translating == False` 且主进度条处于 (0,0)（indeterminate）→ 强制
+`_set_translate_busy(False)`。防线不误伤：翻译进行中（`_translating
+== True`）排空不恢复模式（测试 `test_drain_guard_does_not_fight_running_
+translation` 守卫）。
+
+测试：新增 `test_drain_events_final_guard`（乱序 round 后排空恢复）、
+`test_drain_guard_does_not_fight_running_translation`（不误伤）。回归：
+**387 passed**。
+
+注：若用户界面进程是修复前启动的，需重启程序才能加载新代码。
