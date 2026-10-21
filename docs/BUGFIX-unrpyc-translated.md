@@ -62,6 +62,32 @@
 
 回归：`python -m pytest tests -p no:cacheprovider` → **372 passed**。
 
+## 5b. 追加修复：SDK 空模板不再误标 TRANSLATED（BUGFIX(sdk-template-pending)，2026-10-21）
+
+用户用 Ren'Py SDK 重新生成翻译模板（`# "英文原文"` 注释行 + **英文**
+台词行，尚未翻译）后导入，103 条被误标 TRANSLATED——形态 1 原判定
+「有注释行 + 台词非空即已译」，但空模板的台词行内容就是英文原文本身。
+
+排除清空工程因素：清空逻辑无状态残留，project.json 数据直接证明是
+解析判定问题（translated 段的 target 全部等于 source）。
+
+修复：形态 1 判定改为 **「台词与注释原文不同才算 TRANSLATED」**；
+相同 = SDK 空模板未翻译 → PENDING、target 置空。四形态语义：
+
+| 形态 | 判据 | source | target | status |
+|---|---|---|---|---|
+| 1a 模板已译 | `#` 注释行 + 台词≠原文 | 注释原文 | 台词 | TRANSLATED |
+| 1b 模板未译（SDK 空模板） | `#` 注释行 + 台词=原文 | 注释原文 | 无 | PENDING |
+| 2 unrpyc 已译 | 无注释 + CJK 台词 | 台词 | 台词 | TRANSLATED |
+| 3 unrpyc 未译 | 无注释 + 非CJK台词 | 台词 | 无 | PENDING |
+
+实测：SDK 模板文件 646 段从 pending 543 / translated 103 →
+**pending 619 / translated 27**（27 条均为合法的 old/new strings 对，
+其原文在 old 行，不受本判定影响）。
+
+测试：`test_dialogue_source_forms` 扩为四形态断言（含 1b 回归守卫）。
+回归：**377 passed**。
+
 ## 6. 用户操作指引
 
 需**重新导入**该游戏文件：旧 project.json 中 646 条假 pending 段将被

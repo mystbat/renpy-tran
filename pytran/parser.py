@@ -348,20 +348,26 @@ class RenpyParser:
         三种形态（对齐 2.0「原文注释」列语义——原文必须来自可靠来源）：
 
         1. 官方模板：块内有 `# "英文"` 注释行 → 注释为原文 source，
-           台词行内容为译文/待译 → target=台词，有内容即 TRANSLATED，
-           空则 PENDING（2.0 rpybak 形态，`#` 行永远存在）；
+           台词行内容为译文 → target=台词。
+           BUGFIX(sdk-template-pending)：台词与注释原文**相同** → 尚未
+           翻译（SDK 刚生成的空模板台词=原文），保持 PENDING；不同
+           才是已译（TRANSLATED）。空台词 → PENDING。
+           （2.0 rpybak 形态，`#` 行永远存在。）
         2. unrpyc 已译：无注释行且台词含 CJK → 台词即译文，
            source=target=台词，TRANSLATED（不入待翻队列，避免中文→中文）；
         3. unrpyc 未译：无注释行且台词无 CJK → PENDING 正常送翻。
         """
         text = source.strip()
         if src_comment is not None:
+            # BUGFIX(sdk-template-pending)：台词与原文相同 = SDK 空模板
+            # （原文复读），不是已译；只有台词与原文不同才算 TRANSLATED。
+            translated = bool(text) and text != src_comment.strip()
             self._emit(
                 segments, idx, source=src_comment, feature=feature,
                 kind="dialogue", comment=f'# "{src_comment}"', role=role,
-                status=(SegmentStatus.TRANSLATED if text
+                status=(SegmentStatus.TRANSLATED if translated
                         else SegmentStatus.PENDING),
-                target=text or None,
+                target=(text if translated else None),
             )
         elif _has_cjk(text):
             self._emit(
