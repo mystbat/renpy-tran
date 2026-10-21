@@ -105,6 +105,49 @@ def test_old_new_empty_new_is_pending() -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def test_dialogue_source_forms() -> None:
+    """BUGFIX(unrpyc-translated)：dialogue 台词行的三种原文来源形态。
+
+    对齐 2.0「原文注释」列语义——原文必须来自可靠来源：
+    1. 官方模板（`# "英文"` 注释行 + 台词行）→ 注释为原文；
+    2. unrpyc 已译（无注释 + CJK 台词）→ 台词即译文，TRANSLATED；
+    3. unrpyc 未译（无注释 + 英文台词）→ PENDING 正常送翻。
+    """
+    work = FIXTURES.parent / ".tmp_fix_old_new"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        f = work / "dialogue_forms.rpy"
+        f.write_text(
+            'translate chinese a_1:\n'
+            '    # "Good morning."\n'
+            '    e "早上好。"\n'
+            '\n'
+            'translate chinese a_2:\n'
+            '    e "这是一句已译的中文。"\n'
+            '\n'
+            'translate chinese a_3:\n'
+            '    e "An untranslated English line."\n',
+            encoding="utf-8",
+        )
+        segs = RenpyParser().parse_file(f, game_relpath="dialogue_forms.rpy")
+        assert len(segs) == 3
+        # 形态 1：官方模板——原文来自注释行
+        assert segs[0].source == "Good morning."
+        assert segs[0].target == "早上好。"
+        assert segs[0].status == SegmentStatus.TRANSLATED
+        # 形态 2：unrpyc 已译——中文台词即译文
+        assert segs[1].source == "这是一句已译的中文。"
+        assert segs[1].target == "这是一句已译的中文。"
+        assert segs[1].status == SegmentStatus.TRANSLATED
+        # 形态 3：unrpyc 未译——英文台词正常送翻
+        assert segs[2].source == "An untranslated English line."
+        assert segs[2].status == SegmentStatus.PENDING
+        assert not segs[2].target
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def test_orphan_new_paired_with_empty_old() -> None:
     """BUGFIX(orphan-new)：孤立 `new "Y"`（无 old 配对）→ 补一条空 old 配对。
 
@@ -218,7 +261,12 @@ def test_project_store_roundtrip() -> None:
         assert loaded.version == 3
         assert loaded.app == "pytran"
         assert loaded.next_uid == project.next_uid
-        assert loaded.stats.pending == len(segments)
+        # BUGFIX(unrpyc-translated)：fixture 第 2 块台词「你好，世界。」
+        # 无 # 原文注释行且含 CJK → 导入即 TRANSLATED，不计入 pending。
+        pending_cnt = sum(
+            1 for s in segments if s.status == SegmentStatus.PENDING
+        )
+        assert loaded.stats.pending == pending_cnt
         assert len(loaded.segments) == len(segments)
         # 原文件不应被改写
         assert path.read_bytes() == path.read_bytes()

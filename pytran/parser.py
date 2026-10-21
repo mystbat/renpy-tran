@@ -151,6 +151,19 @@ def _body_belongs_to_new(lines: list[str], body_idx: int, base_indent: int) -> b
     return _body_owner(lines, body_idx, base_indent) == "new"
 
 
+_CJK_RE = re.compile(r"[\u2e80-\u9fff\uf900-\ufaff\u3040-\u30ff]")
+
+
+def _has_cjk(text: str) -> bool:
+    """文本含 CJK 表意文字/假名（BUGFIX(unrpyc-translated) 判据）。
+
+    用于区分 unrpyc 产物中「已译中文台词」（不入待翻队列）与
+    「英文原文台词」（正常送翻）。标点/全角符号不算——避免中文标点
+    残留的未译行被误判为已译。
+    """
+    return bool(_CJK_RE.search(text))
+
+
 def _replace_dialogue(line: str, new_text: str) -> str:
     """Replace the dialogue text of *line* with *new_text*, preserving the
     role prefix, quote style and trailing suffix byte-for-byte (设计 §6.1)."""
@@ -270,6 +283,7 @@ class RenpyParser:
         feature = lines[start].strip()
         i = start + 1
         n = len(lines)
+        pending_src_comment: str | None = None  # 最近一条 `# "原文"` 注释行
         while i < n:
             cur = lines[i]
             if not cur.strip():
@@ -279,7 +293,12 @@ class RenpyParser:
             if cur_indent <= indent:
                 break  # sibling header closes the block
             if cur.lstrip().startswith("#"):
-                i += 1  # comment line, kept verbatim
+                # 官方翻译模板（Ren'Py 生成）形态：台词块内 `# "英文原文"`
+                # 注释行。记录之，供台词行作原文来源（对齐 2.0「原文注释」
+                # 列语义）；非引号注释（纯注释）不影响。
+                cm = re.match(r'^#\s*(["\'])(.*)\1\s*$', cur.lstrip())
+                pending_src_comment = cm.group(2) if cm else None
+                i += 1
                 continue
             lm = _LINK_RE.match(cur)
             if lm is not None:
@@ -303,15 +322,58 @@ class RenpyParser:
                 continue
             dlg = _extract_dialogue(cur)
             if dlg is None:
+                pending_src_comment = None
                 i += 1  # non-dialogue statement; keep verbatim
                 continue
             role, _quote, text, _suffix = dlg
-            self._emit(
-                segments, i, source=text, feature=feature, kind="dialogue",
-                comment=f'# "{text}"', role=role,
+            self._emit_dialogue(
+                segments, i, source=text, feature=feature, role=role,
+                src_comment=pending_src_comment,
             )
+            pending_src_comment = None
             i += 1
         return None, i
+
+    def _emit_dialogue(
+        self,
+        segments: list[Segment],
+        idx: int,
+        source: str,
+        feature: str,
+        role: str,
+        src_comment: str | None,
+    ) -> None:
+        """dialogue 台词行立段（BUGFIX(unrpyc-translated)）。
+
+        三种形态（对齐 2.0「原文注释」列语义——原文必须来自可靠来源）：
+
+        1. 官方模板：块内有 `# "英文"` 注释行 → 注释为原文 source，
+           台词行内容为译文/待译 → target=台词，有内容即 TRANSLATED，
+           空则 PENDING（2.0 rpybak 形态，`#` 行永远存在）；
+        2. unrpyc 已译：无注释行且台词含 CJK → 台词即译文，
+           source=target=台词，TRANSLATED（不入待翻队列，避免中文→中文）；
+        3. unrpyc 未译：无注释行且台词无 CJK → PENDING 正常送翻。
+        """
+        text = source.strip()
+        if src_comment is not None:
+            self._emit(
+                segments, idx, source=src_comment, feature=feature,
+                kind="dialogue", comment=f'# "{src_comment}"', role=role,
+                status=(SegmentStatus.TRANSLATED if text
+                        else SegmentStatus.PENDING),
+                target=text or None,
+            )
+        elif _has_cjk(text):
+            self._emit(
+                segments, idx, source=text, feature=feature,
+                kind="dialogue", comment=f'# "{text}"', role=role,
+                status=SegmentStatus.TRANSLATED, target=text,
+            )
+        else:
+            self._emit(
+                segments, idx, source=text, feature=feature,
+                kind="dialogue", comment=f'# "{text}"', role=role,
+            )
 
     def _handle_strings(
         self, lines: list[str], start: int, segments: list[Segment]
