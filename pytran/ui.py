@@ -118,10 +118,12 @@ class PytranApp:
             # _refresh_progress 的 setValue 永久失效，百分比再也不显示
             # （问题清单 C1）。是否 indeterminate 由 _set_translate_busy 单独控制。
             self._set_translate_busy(True)
+            # 细条：每轮以当前队列行数为本次运行总量，开跑时清零。
+            self._run_progress_start(data.get("queue_size", 0))
             lbl = self._widgets.get("progress_label")
             if lbl is not None:
                 lbl.setText(f"翻译第 {data.get('round', '?')} 轮……"
-                            f"（待译 {data.get('queue', '?')} 行）")
+                            f"（待译 {data.get('queue_size', '?')} 行）")
         elif name == "chunk_done":
             # 9ee271f 新增：块级进度。引擎每完成一个块上报一次。
             # 翻译阶段无逐文件进度，但块数百分比足以反映推进（§9 布局图）。
@@ -130,6 +132,8 @@ class PytranApp:
             done, total = data.get("done", 0), data.get("total", 0) or 0
             if pb is not None and total > 0:
                 pb.setValue(int(100.0 * done / total))
+            # 细条：按本块行数推进
+            self._run_progress_advance(data.get("rows", 0))
             lbl = self._widgets.get("progress_label")
             if lbl is not None:
                 extra = f"，本块 {data.get('rows', '?')} 行" if data.get("rows") else ""
@@ -145,11 +149,20 @@ class PytranApp:
                 self._refresh_steps()
         elif name == "translate_finished":
             self._translating = False
+            # BUGFIX(busy-stuck)：终态必须恢复确定性模式——round 事件留下的
+            # indeterminate 若无 chunk_done/progress 跟进（如停止发生在
+            # round 之后、首个 chunk_done 之前），流动动画会永久残留
+            # （用户实测 2026-10-21：停止后按钮已灰但进度条仍在流动）。
+            self._set_translate_busy(False)
+            self._run_progress_reset()
             self._refresh_translate_controls()
         elif name == "translate_stopped":
             # N4：停止终态——让用户明确知道「已停」以及停时的进度快照，
             # 能区分「已排停，正在等当前块跑完」与「按钮没反应」。
             self._translating = False
+            # BUGFIX(busy-stuck)：同上，停止终态恢复确定性模式。
+            self._set_translate_busy(False)
+            self._run_progress_reset()
             self._refresh_translate_controls()
             self._refresh_progress()
             processed = data.get("processed", "?")
@@ -186,6 +199,37 @@ class PytranApp:
         else:
             if pb.maximum() != 100:
                 pb.setRange(0, 100)
+
+    # -- 本次运行进度条（细条，运行时显示） --------------------------------
+    def _run_progress_start(self, total: int) -> None:
+        """开跑：细条清零并显示。``total`` 为本次运行的待发行数。"""
+        rp = self._widgets.get("run_progress")
+        if rp is None:
+            return
+        self._run_total = max(1, int(total or 0))
+        self._run_done = 0
+        rp.setRange(0, 100)
+        rp.setValue(0)
+        rp.show()
+
+    def _run_progress_advance(self, rows: int) -> None:
+        """每完成一块推进细条。"""
+        rp = self._widgets.get("run_progress")
+        if rp is None:
+            return
+        self._run_done = getattr(self, "_run_done", 0) + int(rows or 0)
+        total = max(1, int(getattr(self, "_run_total", 1)))
+        rp.setValue(min(100, int(100.0 * self._run_done / total)))
+
+    def _run_progress_reset(self) -> None:
+        """终态：细条填满后隐藏（给用户一个「跑完了」的视觉确认）。"""
+        rp = self._widgets.get("run_progress")
+        if rp is None:
+            return
+        rp.setValue(100)
+        rp.hide()
+        self._run_total = 0
+        self._run_done = 0
 
     def _ensure_engine_ready(self) -> bool:
         if self.deps is not None and self.deps.engine is not None:
@@ -584,6 +628,15 @@ class PytranApp:
         self._widgets["progress"] = QProgressBar()
         self._widgets["progress"].setRange(0, 100)
         progress_layout.addWidget(self._widgets["progress"])
+        # 本次运行进度（较细，仅在翻译运行时显示）：
+        # 主条 = 工程累计完成度（done/total，常驻）；细条 = 本次运行已发/待发行数。
+        # 每次开跑（round 事件）清零重计，终态（finished/stopped）隐藏。
+        self._widgets["run_progress"] = QProgressBar()
+        self._widgets["run_progress"].setRange(0, 100)
+        self._widgets["run_progress"].setTextVisible(False)
+        self._widgets["run_progress"].setFixedHeight(6)
+        self._widgets["run_progress"].hide()
+        progress_layout.addWidget(self._widgets["run_progress"])
         self._widgets["progress_label"] = QLabel("准备就绪")
         progress_layout.addWidget(self._widgets["progress_label"])
         translate_layout.addLayout(progress_layout)
