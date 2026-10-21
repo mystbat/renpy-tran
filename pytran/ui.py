@@ -539,6 +539,13 @@ class PytranApp:
         self._widgets["btn_import"] = QPushButton("全部导入")
         self._widgets["btn_import"].clicked.connect(self._import_rpy)
         import_bar.addWidget(self._widgets["btn_import"])
+
+        self._widgets["btn_clear_project"] = QPushButton("清空工程")
+        self._widgets["btn_clear_project"].setToolTip(
+            "清空已导入的全部段落与文件记录（project.json 归零），回到未导入状态；\n"
+            "术语表与游戏目录保留。重新「导入」即按当前解析逻辑重建工程。")
+        self._widgets["btn_clear_project"].clicked.connect(self._clear_project)
+        import_bar.addWidget(self._widgets["btn_clear_project"])
         import_layout.addLayout(import_bar)
         
         # 待导入脚本树状/勾选表格
@@ -1274,6 +1281,38 @@ class PytranApp:
                 if path_obj:
                     picked.append(Path(path_obj))
         return picked
+
+    def _clear_project(self) -> None:
+        """清空工程：段列表/导入文件记录/project.json 归零（用户需求 2026-10-20）。
+
+        保留 game_root / 术语表（同目录重新导入即按当前解析逻辑重建）。
+        有未保存的人工译文时弹确认，防误触。
+        """
+        from PyQt6.QtWidgets import QMessageBox
+        if not self.project.segments and not self.project.files:
+            QMessageBox.information(self._window, "清空工程", "工程已经是空的。")
+            return
+        reviewed = sum(
+            1 for s in self.project.segments
+            if s.status.value in ("translated", "reviewed")
+        )
+        msg = (f"确定清空工程？\n\n将删除 {len(self.project.segments)} 条段落"
+               f"（含 {reviewed} 条已译/已审校）的导入记录，project.json 归零。\n"
+               "术语表与游戏目录保留；重新导入即按当前解析逻辑重建。")
+        ret = QMessageBox.question(
+            self._window, "清空工程", msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        from pytran.models import Project
+        game_root = self.project.game_root
+        self.project = Project(version=3, app="pytran", game_root=game_root)
+        self.state = type(self.state)(self.project)
+        JsonProjectStore().save(self.project, self.work_dir)
+        self._log(f"工程已清空（原 {reviewed} 条已译/已审校记录一并移除）；"
+                  "游戏目录与术语表保留，可重新导入")
+        self.state.goto(1)
+        self._refresh_all()
 
     def _import_rpy(self) -> None:
         # 按勾选树导入（用户可取消勾选实现部分导入，N2）
