@@ -116,3 +116,37 @@ KEEP_DECLARED 行 target=source → 写回后 new 行 = 原文（英文）——
 
 - 分支 `task/W5` 继续；red→green；交付说明含 pytest 输出 + git log + 实测清单；
 - 完成后交总控审核（重点：契约变更记录 + _build_queue 三处口径一致性）。
+
+
+---
+
+## 卫生条款（强制，总控 2026-10-21 追加）
+
+> 背景：W5f 交付时任务/W5 分支未 rebase master（基点 `fba40bd`，落后
+> W5d/W5e 多个提交），导致 ui.py 合并冲突且 master 上的 W5d/W5e 修复
+> 面临丢失风险。以下条款自此对**所有**任务书生效。
+
+1. **开工前三步**（缺一不可）：
+   ```
+   git fetch origin                       # 或 git fetch <远端>
+   git rebase master（在 task/<编号> 分支上）
+   git log --oneline master..task/<编号>  # 确认自己的增量
+   ```
+   rebase 有冲突时**先解决再开工**，解决方式写入交付说明。
+
+2. **worktree 状态自查**：确认 `.worktrees/<编号>` 的分支基于最新 master；
+   `git -C .worktrees/<编号> log --oneline -1` 的父提交应包含 master tip。
+
+3. **主树只读**：一切编辑/测试/运行在 worktree 内；禁止在主树（仓库根）
+   创建文件、切分支、改代码。发现主树有异常文件**报告总控**，勿自行处理。
+
+4. **交付前自查**：`git status --short` 不得出现任务范围外的未跟踪文件；
+   `git log --oneline master..task/<编号>` 与交付说明一致。
+
+5. **测试环境**：`.pytest_tmp` 可能含历史 ACL 锁定目录（此前多轮出现过）。
+   跑 pytest 前先清理或确认可写；遇到批量 PermissionError 先清
+   `.pytest_tmp` 再排查代码（此模式已出现三次）。
+
+6. **跨会话知晓**：master 在你开工后可能被其他会话推进（W5d/W5e/W5f
+   均发生过）。交付前 `git fetch` + 再 rebase 一次，交付说明注明最终基线。
+
