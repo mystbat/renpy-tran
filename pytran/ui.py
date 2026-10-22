@@ -1768,6 +1768,7 @@ class PytranApp:
     def _append_preview(self, seg) -> None:
         """把一条已译段落进预览面板。
 
+        * 原文/译文**全文展示不截断**，超宽自动换行（BUGFIX(preview-wrap)）；
         * 只保留最近 ``_PREVIEW_MAX_ROWS`` 条（十万级长跑时的渲染/内存权衡）；
         * 失败行红色 + 原因；``keep_declared`` 标注「AI 申报保留」；
         * 暂停滚动时仍入列，但不强制滚到底（用户可自己滚动查看）。
@@ -1785,16 +1786,16 @@ class PytranApp:
         source = (seg.source or "").strip()
 
         if status_name == "FAILED":
-            text = f"[失败] {source[:40]}\n    ✗ {seg.error or '未知原因'}"
+            text = f"[失败] {source}\n    ✗ {seg.error or '未知原因'}"
             color = QColor("#b03030")
         elif status_name == "KEEP_DECLARED":
-            text = f"[AI 申报保留] {source[:40]}\n    → {target or '(原文)'}"
+            text = f"[AI 申报保留] {source}\n    → {target or '(原文)'}"
             color = QColor("#b8860b")
         elif status_name == "KEEP_ORIGINAL":
-            text = f"[保留原文] {source[:40]}\n    → {target or '(原文)'}"
+            text = f"[保留原文] {source}\n    → {target or '(原文)'}"
             color = QColor("#b8860b")
         elif status_name in ("TRANSLATED", "REVIEWED"):
-            text = f"[{seg.uid}] {source[:40]}\n    → {target}"
+            text = f"[{seg.uid}] {source}\n    → {target}"
             color = QColor("#2e7d32") if status_name == "REVIEWED" else QColor("#1a1a1a")
         else:
             # 其它状态（如 PENDING）不入预览——面板只展示「已译内容」
@@ -1804,6 +1805,13 @@ class PytranApp:
         item.setForeground(QBrush(color))
         item.setData(Qt.ItemDataRole.UserRole, seg.uid)
         lb.addItem(item)
+
+        # BUGFIX(preview-wrap)：原文/译文全文展示，超宽由列表自动换行
+        # （用户需求 2026-10-21：不截断、长过对话框就换行）。QListWidget
+        # 默认不换行且行高固定，需开启 wordWrap 并按内容重算行高。
+        lb.setWordWrap(True)
+        lb.setTextElideMode(Qt.TextElideMode.ElideNone)
+        item.setSizeHint(item.sizeHint())
 
         # 超过上限时从头部丢弃，避免十万级长跑无限增长
         while lb.count() > _PREVIEW_MAX_ROWS:
@@ -1857,28 +1865,36 @@ class PytranApp:
         if ed:
             self.state.save_target(ed.toPlainText())
         self._clear_dirty()
-        self.state.accept_current()
+        cur = self.state.current_review()
+        if cur is None or not self.state.accept_current():
+            return
+        # 锚定到下一条可见条目（避免改变状态后被筛选剔除导致跳两格）
+        self.state.navigate_after_status_change(cur.uid)
         self._refresh_review()
-        self._navigate_list(1) # Auto move next
 
     def _on_flag(self) -> None:
         # 失败前也先把未保存的译文修改落盘，避免误触丢失
         self._stash_if_dirty()
-        self.state.flag_failed_current("manual")
+        cur = self.state.current_review()
+        if cur is None or not self.state.flag_failed_current("manual"):
+            return
+        self.state.navigate_after_status_change(cur.uid)
         self._refresh_review()
-        self._navigate_list(1)
 
     def _on_keep(self) -> None:
         """W5g §2.2「o 保留原文」：标记当前行为保留原文（KEEP_ORIGINAL），
         target 设为原文，且不计入「已译/已审校」完成数。"""
         # 先暂存未保存的译文修改，再标记保留原文（与 _on_flag 一致）
         self._stash_if_dirty()
-        if not self.state.keep_original_current():
+        cur = self.state.current_review()
+        if cur is None or not self.state.keep_original_current():
             self._log("无可保留原文的条目（审校列表为空或非选中项）。", level="warn")
             return
         self._clear_dirty()
+        # 锚定到下一条可见条目：KEEP_ORIGINAL 被 pending 等筛选排除时，
+        # 该条从列表消失、其余上移一格，直接 +1 会再跳一格（视觉跳两格）。
+        self.state.navigate_after_status_change(cur.uid)
         self._refresh_review()
-        self._navigate_list(1)
 
     def _decompile_interpreters(self) -> "tuple[Path | None, Path | None]":
         """反编译用解释器：config.renpy_sdk_dir 的 SDK python 优先（更新版本、
@@ -2049,8 +2065,9 @@ class PytranApp:
         journal = getattr(self.deps, "journal", None)
         try:
             self.deps.exporter.write_back_project(self.project, self.work_dir, journal)
-            # 写回成功：将导入的文件标记为「已翻译」，并刷新导入页状态列。
-            self._written_back_files = {gf.name for gf in self.project.files}
+            # 写回成功：把本次写回的文件并入「已翻译」集合（累计，不覆盖历史），
+            # 并刷新导入页状态列。
+            self._written_back_files |= {gf.name for gf in self.project.files}
             self._refresh_import_tree()
             self._log("已事务化写回游戏目录")
         except Exception as exc:
@@ -2180,15 +2197,15 @@ class PytranApp:
             is_imported = rel in imported_files_set
             status_text = "已导入" if is_imported else "未导入"
 
-            # 翻译状态（第 5 列）：导入的文件在写回后标记为「已翻译」，
-            # 否则「未翻译」；未导入的文件显示「-」占位。
-            is_written = rel in self._written_back_files
-            if not is_imported:
-                trans_text = "-"
-            elif is_written:
+            # 翻译状态（第 5 列）：与「导入状态」解耦。
+            # 一旦某文件曾经写回游戏目录（_written_back_files 累计），
+            # 即使之后重新导入别的文件、使其不再属于当前工程，也始终显示「已翻译」。
+            if rel in self._written_back_files:
                 trans_text = "已翻译"
-            else:
+            elif is_imported:
                 trans_text = "未翻译"
+            else:
+                trans_text = "-"
 
             item = QTreeWidgetItem(["", rel, sz, status_text, trans_text])
             # 用户需求：导入页勾选默认全不选（用户按需勾选/用「全选」）。
