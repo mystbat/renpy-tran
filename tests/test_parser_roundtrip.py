@@ -262,8 +262,57 @@ def test_skipped_block_preserved_and_counted() -> None:
     segments = parser.parse_file(path)
     skipped = [s for s in segments if s.status == SegmentStatus.SKIPPED]
     assert len(skipped) >= 1
+
+
+def test_multi_file_import_uid_unique() -> None:
+    """BUGFIX(dup-uid)：多文件导入后 uid 必须全局唯一且连续。
+
+    解析器按文件局部计数（每个 parse_file 从 1 起）；uid 是引擎
+    seg_map / 预览回查 / 审校游标的全局主键。用户实测 2026-10-21：
+    10 文件 1468 段仅 436 个唯一 uid——预览显示别的句子的译文
+    （rpg.rpy uid55 的事件回查到 loca_screen.rpy 的 uid55）、写回错行。
+    build_project 现按传入顺序统一重编 1..N。
+    """
+    work = FIXTURES.parent / ".tmp_fix_old_new"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        f1 = work / "a.rpy"
+        f2 = work / "b.rpy"
+        f1.write_text(
+            'translate chinese t1:\n    e "a1"\n    e "a2"\n    e "a3"\n',
+            encoding="utf-8",
+        )
+        f2.write_text(
+            'translate chinese t2:\n    e "b1"\n    e "b2"\n',
+            encoding="utf-8",
+        )
+        p = RenpyParser()
+        segs = []
+        segs.extend(p.parse_file(f1, game_relpath="a.rpy"))
+        segs.extend(p.parse_file(f2, game_relpath="b.rpy"))
+        # 解析层：各文件局部计数（既有行为，uid 撞车）
+        assert [s.uid for s in segs if s.file == "a.rpy"] == [1, 2, 3]
+        assert [s.uid for s in segs if s.file == "b.rpy"] == [1, 2]
+        # build_project 统一重编：全局唯一且连续
+        project = build_project(segs)
+        uids = [s.uid for s in project.segments]
+        assert uids == [1, 2, 3, 4, 5]
+        assert project.next_uid == 6
+        # 段与文件的对应关系不变（a.rpy 三条在前、b.rpy 两条在后）
+        assert [s.file for s in project.segments] == ["a.rpy", "a.rpy",
+                                                       "a.rpy", "b.rpy", "b.rpy"]
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_skipped_block_preserved_and_counted_tail() -> None:
+    """原 test_skipped_block_preserved_and_counted 的尾部断言（拆分保持）。"""
+    path = FIXTURES / "skipped_block.rpy"
+    parser = RenpyParser()
+    segments = parser.parse_file(path)
     # 字节保留由 roundtrip 测试保证；这里确认块头被标 skipped
-    assert any("init python" in s.feature for s in skipped)
+    assert any("init python" in s.feature for s in segments)
 
 
 def test_translated_line_replaces_only_quoted_text() -> None:
