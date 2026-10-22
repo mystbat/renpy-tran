@@ -160,3 +160,78 @@ def test_position_label_reports_rendered_and_total(gui: PytranApp) -> None:
     text = gui._widgets["review_position"].text()
     assert str(ALL_ITEMS) in text          # 当前筛选总数
     assert str(REVIEW_PAGE_SIZE) in text   # 已渲染条数
+
+
+# --------------------------------------------------------------------------
+# W5g §2：保留原文状态 + 重试范围修正
+# --------------------------------------------------------------------------
+def _mixed_project() -> Project:
+    """含 KEEP_DECLARED / KEEP_ORIGINAL 的混合工程，用于验证筛选与重译范围。"""
+    segments = [_seg(i, SegmentStatus.PENDING) for i in range(1, 21)]
+    segments.append(_seg(21, SegmentStatus.KEEP_DECLARED))
+    segments.append(_seg(22, SegmentStatus.KEEP_ORIGINAL))
+    return Project(game_root="C:/game", segments=segments)
+
+
+@pytest.fixture()
+def mixed_gui(qt_app, monkeypatch):
+    monkeypatch.setattr(QApplication, "exec", lambda self: 0, raising=False)
+    app = PytranApp(_mixed_project(), work_dir=".")
+    app._log = lambda *a, **k: None
+    app.run()
+    yield app
+    if app._timer is not None:
+        app._timer.stop()
+    if app._window is not None:
+        app._window.close()
+
+
+def test_keep_original_filter_count(mixed_gui: PytranApp) -> None:
+    _goto_review(mixed_gui)
+    combo = mixed_gui._widgets["review_filter"]
+
+    def select(key: str) -> None:
+        combo.setCurrentIndex(
+            [combo.itemData(i) for i in range(combo.count())].index(key))
+
+    # keep_declared 仅 1 条（uid21）；keep_original 仅 1 条（uid22）
+    select("keep_declared")
+    assert mixed_gui._displayed_review_rows() == 1
+    select("keep_original")
+    assert mixed_gui._displayed_review_rows() == 1
+    assert mixed_gui.state.review_filter == "keep_original"
+
+
+def test_translatable_uids_excludes_keep_states(mixed_gui: PytranApp) -> None:
+    uids = set(mixed_gui._translatable_uids())
+    # 仅 PENDING 入队：1..20
+    assert uids == set(range(1, 21))
+    assert 21 not in uids   # KEEP_DECLARED
+    assert 22 not in uids   # KEEP_ORIGINAL
+
+
+def test_on_keep_marks_keep_original(mixed_gui: PytranApp) -> None:
+    _goto_review(mixed_gui)
+    # 选到 uid21（KEEP_DECLARED）所在的「全部」列表位置
+    mixed_gui.state.set_filter("all")
+    mixed_gui._refresh_review()
+    # 找 KEEP_DECLARED 段（uid21）在 segments 中的下标并选中
+    idx = next(i for i, s in enumerate(mixed_gui.project.segments)
+               if s.status == SegmentStatus.KEEP_DECLARED)
+    mixed_gui.state._review_index = idx
+    mixed_gui._refresh_review()
+    mixed_gui._on_keep()
+    seg = mixed_gui.project.segments[idx]
+    assert seg.status == SegmentStatus.KEEP_ORIGINAL
+    assert seg.target == seg.source      # target 被设为原文
+    assert seg.error is None
+    # 不再出现在可译队列
+    assert seg.uid not in mixed_gui._translatable_uids()
+
+
+def test_progress_excludes_keep_original(mixed_gui: PytranApp) -> None:
+    p = mixed_gui.state.progress()
+    assert p["total"] == 22
+    # done 仅统计 translated/reviewed → 混合工程无二者，done=0
+    assert p["done"] == 0
+

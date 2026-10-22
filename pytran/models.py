@@ -18,6 +18,7 @@ class SegmentStatus(str, enum.Enum):
     REVIEWED = "reviewed"                # 人工已接受（自动重译不再覆盖，§6.5）
     FAILED = "failed"                    # 最终失败（reason 见 Segment.error）
     KEEP_DECLARED = "keep_declared"      # AI 申报保留，待人工裁定（§5.4）
+    KEEP_ORIGINAL = "keep_original"      # 人工保留原文：不译、不进重译队列（W5g §2.1）
     SKIPPED = "skipped"                  # 解析时无法归类，原样保留（§14 风险表）
 
 
@@ -94,6 +95,7 @@ class ProjectStats:
     reviewed: int = 0
     failed: int = 0
     keep_declared: int = 0
+    keep_original: int = 0
     skipped: int = 0
 
     @classmethod
@@ -142,6 +144,7 @@ class Project:
                 "reviewed": self.stats.reviewed,
                 "failed": self.stats.failed,
                 "keep_declared": self.stats.keep_declared,
+                "keep_original": self.stats.keep_original,
                 "skipped": self.stats.skipped,
             },
         }
@@ -163,6 +166,7 @@ class Project:
                 reviewed=int(stats_raw.get("reviewed", 0)),
                 failed=int(stats_raw.get("failed", 0)),
                 keep_declared=int(stats_raw.get("keep_declared", 0)),
+                keep_original=int(stats_raw.get("keep_original", 0)),
                 skipped=int(stats_raw.get("skipped", 0)),
             ),
         )

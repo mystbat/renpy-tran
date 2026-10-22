@@ -169,6 +169,65 @@ def test_review_move_next_prev_clamped() -> None:
 
 
 def test_review_filters_constant_complete() -> None:
+    # W5g §2：新增 keep_original（与 keep_declared 并列，二者都显示「保留原文」）
     assert REVIEW_FILTERS == (
-        "all", "pending", "translated", "failed", "keep_declared", "reviewed"
+        "all", "pending", "translated", "failed",
+        "keep_declared", "keep_original", "reviewed",
     )
+
+
+def test_keep_original_filter_selects_only_that_status() -> None:
+    proj = _make_project()
+    proj.segments.append(Segment(
+        uid=5, file="a.rpy", locator="loc5", feature="f5", kind="dialogue",
+        comment="", role="", source="orig", target=None,
+        status=SegmentStatus.KEEP_ORIGINAL,
+    ))
+    st = UiState(proj)
+    st.set_filter("keep_original")
+    items = st.review_items()
+    assert [i.uid for i in items] == [5]
+    # keep_declared（uid4）不应出现在 keep_original 下
+    st.set_filter("keep_declared")
+    items = st.review_items()
+    assert [i.uid for i in items] == [4]
+
+
+def test_keep_original_current_marks_status_and_target() -> None:
+    proj = _make_project()
+    proj.segments.append(Segment(
+        uid=5, file="a.rpy", locator="loc5", feature="f5", kind="dialogue",
+        comment="", role="", source="原文全文", target=None,
+        status=SegmentStatus.FAILED, error="english",
+    ))
+    st = UiState(proj)
+    st.set_filter("all")
+    st._review_index = 4  # 指向 uid5
+    assert st.keep_original_current() is True
+    seg = proj.segments[4]
+    assert seg.status == SegmentStatus.KEEP_ORIGINAL
+    assert seg.target == "原文全文"      # target 被设为原文
+    assert seg.error is None            # 清空失败原因
+
+
+def test_keep_original_current_no_selection_returns_false() -> None:
+    proj = _make_project()
+    st = UiState(proj)
+    st.set_filter("reviewed")  # 无 reviewed 行 → current_review 为 None
+    assert st.current_review() is None
+    assert st.keep_original_current() is False
+
+
+def test_keep_original_not_counted_as_done() -> None:
+    proj = _make_project()
+    proj.segments.append(Segment(
+        uid=5, file="a.rpy", locator="loc5", feature="f5", kind="dialogue",
+        comment="", role="", source="orig", target="orig",
+        status=SegmentStatus.KEEP_ORIGINAL,
+    ))
+    st = UiState(proj)
+    p = st.progress()
+    assert p["total"] == 5
+    # done 仅统计 translated/reviewed → keep_original（uid5）与 keep_declared（uid4）均不计
+    assert p["done"] == 1
+    assert p["failed"] == 1

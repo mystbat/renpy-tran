@@ -206,8 +206,12 @@ class ExporterImpl(Exporter):
             except Exception:  # pragma: no cover - 审计失败不阻断接受
                 pass
 
-        # ③ 置 REVIEWED（已 REVIEWED 的行不变；keep_declared 一并接受）
+        # ③ 置 REVIEWED（已 REVIEWED 的行不变；keep_declared 一并接受）。
+        # W5g §2：KEEP_ORIGINAL（人工保留原文）不在此强制接受——它保持原样，
+        # 写回时取 source 残片（见 _regenerate_all / 写回残片逻辑）。
         for uid in target:
+            if by_uid[uid].status == SegmentStatus.KEEP_ORIGINAL:
+                continue
             by_uid[uid].status = SegmentStatus.REVIEWED
 
         # ④ 可选：保留原文残片并入免翻表

@@ -33,7 +33,10 @@ STEP_REVIEW = 3       # 审校
 STEP_EXPORT = 4       # 导出并写回
 
 # 审校过滤器（§9 审校页：左右对照 + 状态筛选）
-REVIEW_FILTERS = ("all", "pending", "translated", "failed", "keep_declared", "reviewed")
+# W5g §2：新增 keep_original（人工保留原文），与 keep_declared 并列，
+# 但二者在 REVIEW_FILTER_LABELS 均显示「保留原文」（按"不区分"处理）。
+REVIEW_FILTERS = ("all", "pending", "translated", "failed",
+                  "keep_declared", "keep_original", "reviewed")
 
 
 @dataclass
@@ -202,6 +205,18 @@ class UiState:
         seg.target = target
         return True
 
+    def keep_original_current(self) -> bool:
+        """W5g §2.2「k 保留原文」：当前行标记 KEEP_ORIGINAL，
+        并把 target 设为原文（保留原文全文，写回时用 source 残片）。
+        不计入「已翻译/已审校」完成数（progress 口径不变）。"""
+        seg = self._current_segment()
+        if seg is None:
+            return False
+        seg.status = SegmentStatus.KEEP_ORIGINAL
+        seg.target = seg.source
+        seg.error = None
+        return True
+
 
 def _filter_segments(segments: Iterable[Segment], filt: str) -> list[Segment]:
     if filt == "all":
@@ -211,6 +226,7 @@ def _filter_segments(segments: Iterable[Segment], filt: str) -> list[Segment]:
         "translated": SegmentStatus.TRANSLATED,
         "failed": SegmentStatus.FAILED,
         "keep_declared": SegmentStatus.KEEP_DECLARED,
+        "keep_original": SegmentStatus.KEEP_ORIGINAL,
         "reviewed": SegmentStatus.REVIEWED,
     }
     want = mapping.get(filt)

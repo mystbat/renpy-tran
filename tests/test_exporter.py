@@ -267,3 +267,39 @@ def test_bulk_accept_empty_uids_is_noop(work_dir: Path) -> None:
     journal = JsonWriteJournal(work_dir)
     assert exp.bulk_accept(proj, [], journal, work_dir=work_dir) == 0
     assert proj.segments[0].status == SegmentStatus.TRANSLATED  # 不变
+
+
+def test_bulk_accept_preserves_keep_original(work_dir: Path) -> None:
+    """W5g §2：批量接受时，KEEP_ORIGINAL 行不得被强制改为 REVIEWED。"""
+    proj = _make_project()
+    # 追加一条人工保留原文行：target 设为原文
+    proj.segments.append(Segment(
+        uid=4, file="a.rpy", locator="loc4", feature="f4", kind="dialogue",
+        comment="", role="", source="Skip intro", target="Skip intro",
+        status=SegmentStatus.KEEP_ORIGINAL,
+    ))
+    exp = ExporterImpl(FakeParser())
+    journal = JsonWriteJournal(work_dir)
+    n = exp.bulk_accept(proj, [1, 2, 3, 4], journal, work_dir=work_dir)
+    assert n == 4
+    assert proj.segments[0].status == SegmentStatus.REVIEWED   # TRANSLATED → REVIEWED
+    assert proj.segments[2].status == SegmentStatus.REVIEWED   # KEEP_DECLARED → REVIEWED
+    # KEEP_ORIGINAL 保持原样，不被接受覆盖
+    assert proj.segments[3].status == SegmentStatus.KEEP_ORIGINAL
+    assert proj.segments[3].target == "Skip intro"
+
+
+def test_export_writes_source_for_keep_original(work_dir: Path) -> None:
+    """导出写回时，KEEP_ORIGINAL 行的残片取 source（保留原文）。"""
+    proj = _make_project()
+    proj.segments.append(Segment(
+        uid=4, file="a.rpy", locator="loc4", feature="f4", kind="dialogue",
+        comment="", role="", source="Press start", target="Press start",
+        status=SegmentStatus.KEEP_ORIGINAL,
+    ))
+    exp = ExporterImpl(FakeParser())
+    written = exp.export_rpy(proj, work_dir)
+    assert len(written) == 1
+    text = written[0].read_text(encoding="utf-8")
+    # 该行的 target 即原文（保留原文），写回内容应含原文
+    assert "target='Press start'" in text

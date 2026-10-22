@@ -31,6 +31,7 @@ REVIEW_FILTER_LABELS = {
     "translated": "已翻译",
     "failed": "失败",
     "keep_declared": "保留原文",
+    "keep_original": "保留原文",
     "reviewed": "已审校",
 }
 
@@ -92,6 +93,9 @@ class PytranApp:
         self._trial_lines: Optional[int] = None
         # 审校页：译文框是否存在未保存修改
         self._review_dirty = False
+        # 导入页「翻译状态」列：本会话内已写回游戏目录的相对路径集合
+        # （models.py 冻结不可落盘，故仅内存追踪；写回后置「已翻译」）。
+        self._written_back_files: set[str] = set()
 
     def on_event(self, name: str, data: dict) -> None:
         self._events.put((name, data or {}))
@@ -430,6 +434,29 @@ class PytranApp:
                       "——已按空术语表处理，保存后将覆盖原文件", level="warn")
             return TermProfile()
 
+    @staticmethod
+    def _icon_path() -> Path:
+        """图标文件位置。
+
+        ``pytran/ui.py`` 的上上级目录，在开发态是仓库根；在 PyInstaller
+        onedir 打包后是 ``_MEIPASS``（spec 的 datas 把 assets/ 也放在那里）。
+        两种情况下 ``assets/pytran.ico`` 都能命中，因此无需区分 frozen。
+        """
+        return Path(__file__).resolve().parent.parent / "assets" / "pytran.ico"
+
+    def _set_app_icon(self, app) -> None:
+        """设置应用图标（对所有窗口生效）。缺失时只记日志，不影响启动——
+        图标纯属装饰，不能让它成为 GUI 的启动失败点。"""
+        try:
+            from PyQt6.QtGui import QIcon
+        except Exception:  # noqa: BLE001 - headless 环境可能取不到 QtGui
+            return
+        path = self._icon_path()
+        if not path.is_file():
+            logger.warning("图标文件缺失，已跳过：%s", path)
+            return
+        app.setWindowIcon(QIcon(str(path)))
+
     def run(self) -> None:  # pragma: no cover
         import sys
         from PyQt6.QtWidgets import (
@@ -453,6 +480,7 @@ class PytranApp:
                 min-height: 28px;
             }
         """)
+        self._set_app_icon(app)
             
         window = QMainWindow()
         window.setWindowTitle("pytran 3.0 — Ren'Py AI 汉化工具")
@@ -775,9 +803,12 @@ class PytranApp:
         btn_accept.clicked.connect(self._on_accept)
         btn_flag = QPushButton("f 失败")
         btn_flag.clicked.connect(self._on_flag)
+        btn_keep = QPushButton("o 保留原文")
+        btn_keep.clicked.connect(self._on_keep)
         review_btns.addWidget(btn_save)
         review_btns.addWidget(btn_accept)
         review_btns.addWidget(btn_flag)
+        review_btns.addWidget(btn_keep)
         review_btns.addStretch()
         self._widgets["review_dirty"] = QLabel("")
         self._widgets["review_dirty"].setStyleSheet("color:#b03030; font-size:12px;")
@@ -829,6 +860,7 @@ class PytranApp:
             _scoped("A", self._on_accept)
             _scoped("F", self._on_flag)
             _scoped("S", self._on_save)
+            _scoped("O", self._on_keep)
             _scoped("J", lambda: self._navigate_list(1))
             _scoped("K", lambda: self._navigate_list(-1))
         sc_save = QShortcut(QKeySequence("Ctrl+S"), window)
@@ -1494,8 +1526,9 @@ class PytranApp:
     def _retry_failed(self) -> None:
         """§6.5「失败重译」：只重发 FAILED 行（问题清单 B1）。
 
-        与「开始自动翻译」分流：后者会把 PENDING/FAILED/KEEP_DECLARED
-        全部收进队列，前者只针对失败行，语义与按钮文案一致。
+        与「开始自动翻译」分流：两者都只收 PENDING/FAILED（W5g §2 起，
+        KEEP_DECLARED/KEEP_ORIGINAL 不再进队列），前者只针对失败行，
+        语义与按钮文案一致。
         """
         if not self._ensure_engine_ready():
             return
@@ -1555,14 +1588,14 @@ class PytranApp:
         """返回本次可译的 uid（按 uid 升序，与切块顺序一致）。
 
         口径与 ``TranslationEngine._build_queue`` 严格一致：
-        PENDING / FAILED / KEEP_DECLARED。SKIPPED 不进（设计 §14：
-        宁可不翻不可弄坏），TRANSLATED / REVIEWED 不进（断点续传跳过）。
+        PENDING / FAILED。W5g §2：KEEP_DECLARED 与 KEEP_ORIGINAL 均不进
+        重译队列（保留原文/AI 申报保留的行不会被自动重译覆盖）。SKIPPED 不进
+        （设计 §14：宁可不翻不可弄坏），TRANSLATED / REVIEWED 不进（断点续传跳过）。
         """
         from pytran.models import SegmentStatus
         return sorted(
             s.uid for s in self.project.segments
-            if s.status in (SegmentStatus.PENDING, SegmentStatus.FAILED,
-                            SegmentStatus.KEEP_DECLARED)
+            if s.status in (SegmentStatus.PENDING, SegmentStatus.FAILED)
         )
 
     def _estimate_tokens(self, only_uids: Optional[set] = None) -> int:
@@ -1637,8 +1670,8 @@ class PytranApp:
         再决定是否全量开跑。
 
         实现要点：
-        * 从未译行（PENDING/FAILED/KEEP_DECLARED）按 uid 升序取前 N 条——
-          与切块顺序一致，保证带上前文上下文（§4.1）；
+        * 从未译行（PENDING/FAILED，W5g §2 起不含 KEEP_DECLARED/KEEP_ORIGINAL）
+          按 uid 升序取前 N 条——与切块顺序一致，保证带上前文上下文（§4.1）；
         * 走 ``engine.run(only_uids=...)``，与全量**完全同一套校验链**
           （V1-V6 / 检测器），不是简化版；
         * 结果写入工程（project.json），后续全量翻译不会重翻这些行；
@@ -1757,6 +1790,9 @@ class PytranApp:
         elif status_name == "KEEP_DECLARED":
             text = f"[AI 申报保留] {source[:40]}\n    → {target or '(原文)'}"
             color = QColor("#b8860b")
+        elif status_name == "KEEP_ORIGINAL":
+            text = f"[保留原文] {source[:40]}\n    → {target or '(原文)'}"
+            color = QColor("#b8860b")
         elif status_name in ("TRANSLATED", "REVIEWED"):
             text = f"[{seg.uid}] {source[:40]}\n    → {target}"
             color = QColor("#2e7d32") if status_name == "REVIEWED" else QColor("#1a1a1a")
@@ -1829,6 +1865,18 @@ class PytranApp:
         # 失败前也先把未保存的译文修改落盘，避免误触丢失
         self._stash_if_dirty()
         self.state.flag_failed_current("manual")
+        self._refresh_review()
+        self._navigate_list(1)
+
+    def _on_keep(self) -> None:
+        """W5g §2.2「o 保留原文」：标记当前行为保留原文（KEEP_ORIGINAL），
+        target 设为原文，且不计入「已译/已审校」完成数。"""
+        # 先暂存未保存的译文修改，再标记保留原文（与 _on_flag 一致）
+        self._stash_if_dirty()
+        if not self.state.keep_original_current():
+            self._log("无可保留原文的条目（审校列表为空或非选中项）。", level="warn")
+            return
+        self._clear_dirty()
         self._refresh_review()
         self._navigate_list(1)
 
@@ -2225,6 +2273,9 @@ class PytranApp:
                 witem.setForeground(QBrush(QColor("blue")))
             elif tag == "REVIEWED":
                 witem.setForeground(QBrush(QColor("green")))
+            elif tag in ("KEEP_DECLARED", "KEEP_ORIGINAL"):
+                # W5g §2：两类保留原文在列表中统一以琥珀色标记（按"不区分"）
+                witem.setForeground(QBrush(QColor("#b8860b")))
                 
             lb.addItem(witem)
 

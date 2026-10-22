@@ -77,7 +77,8 @@ class TranslationEngine:
         cap = min(int(config.round_budget_cap), ROUND_BUDGET_CAP)
 
         seg_map = {seg.uid: seg for seg in project.segments}
-        # 初始队列：可译行（PENDING/FAILED/KEEP_DECLARED），受 only_uids 限制（§5.3 可重入）
+        # 初始队列：可译行（PENDING/FAILED，§5.3 可重入），受 only_uids 限制。
+        # W5g §2：KEEP_DECLARED / KEEP_ORIGINAL 不进队列（见 _build_queue）。
         queue: set[Uid] = self._build_queue(project, only_uids)
 
         if not queue:
@@ -311,11 +312,16 @@ class TranslationEngine:
     # -- 工具 -----------------------------------------------------------------
     @staticmethod
     def _build_queue(project: Project, only_uids: Optional[set[Uid]]) -> set[Uid]:
+        """W5g §2 根因修复：重译队列只收 PENDING / FAILED。
+
+        KEEP_DECLARED（AI 申报保留）与 KEEP_ORIGINAL（人工保留原文）此前被
+        错误地纳入队列，导致「已被接受/已声明保留」的段在「全量翻译」、
+        「失败重试」、「试译」三处都会被自动重发覆盖。现在二者均不进队列——
+        与 ``ui._translatable_uids`` 同一口径。SKIPPED 本就不进（§14）。
+        """
         queue: set[Uid] = set()
         for seg in project.segments:
-            if seg.status in (
-                SegmentStatus.PENDING, SegmentStatus.FAILED, SegmentStatus.KEEP_DECLARED,
-            ):
+            if seg.status in (SegmentStatus.PENDING, SegmentStatus.FAILED):
                 if only_uids is None or seg.uid in only_uids:
                     queue.add(seg.uid)
         return queue

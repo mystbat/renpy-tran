@@ -50,11 +50,12 @@ class Segmenter:
         self.max_lines = max(1, max_lines)
         self.context_lines = max(0, context_lines)
         # 只切块"可翻译"的段；skipped 段不进翻译队列（设计 §14：原样保留）。
+        # W5g §2：KEEP_DECLARED / KEEP_ORIGINAL 不进队列（与 engine._build_queue、
+        # ui._translatable_uids 同一口径），故默认仅 PENDING / FAILED。
         self.include_statuses = include_statuses or frozenset(
             {
                 SegmentStatus.PENDING,
                 SegmentStatus.FAILED,
-                SegmentStatus.KEEP_DECLARED,
             }
         )
 

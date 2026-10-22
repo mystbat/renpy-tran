@@ -123,7 +123,8 @@ def _fill_import_tree(gui: PytranApp, checked: int, total: int = 3) -> None:
         it = QTreeWidgetItem(["", f"file{i}.rpy", "1.0 KB", "未导入"])
         it.setCheckState(0, Qt.CheckState.Checked if i < checked
                          else Qt.CheckState.Unchecked)
-        it.setData(0, Qt.ItemDataRole.UserRole, f"C:/fake/file{i}.rpy")
+        # 与 _refresh_import_tree 一致：路径存于第 1 列（UserRole）
+        it.setData(1, Qt.ItemDataRole.UserRole, f"C:/fake/file{i}.rpy")
         tree.addTopLevelItem(it)
 
 
