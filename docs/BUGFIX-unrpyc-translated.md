@@ -103,6 +103,29 @@ TRANSLATED」**；相同 = 空模板占位 → PENDING。孤立 new（source=""�
 测试：新增 `test_old_new_same_text_is_pending`（1b 的 strings 版回归
 守卫）。回归：**378 passed**。
 
+## 5d. 追加修复：带 role 前缀的注释行也是原文来源（BUGFIX(role-comment)，2026-10-21 续二）
+
+用户复核：重新导入后第 1~13 行（无 role 的 `"..."` 台词块）正确，
+第 3 块起「我说听着动静耳熟呢！……」一大段仍把中文当原文。
+
+根因：这些块的注释行**带说话人前缀**——`# ter "I thought I heard
+you two! ..."`。原正则 `^#\s*(["'])(.*)\1\s*$` 只匹配 `#` 后直接接
+引号的形态，role 前缀（ter/kar/hor 等无引号单词）导致不匹配 →
+`pending_src_comment` 置 None → 台词行走 unrpyc 分支（CJK → 已译，
+source=中文译文）。
+
+修复：正则改为 `^#\s*(?:[\w.]+\s+)?(["'])(.*)\1\s*$`——`#` 后允许
+一个可选的 role 前缀（无引号单词），引号串提取不变。定位行
+`# game/...` 仍不匹配（无引号串），无副作用。
+
+实测：修复后 646 段 → **translated 559 / pending 99**；99 条 pending
+的 source **全部为英文**（96 条 dialogue 空模板未译 + 3 条 strings
+new=old 占位），0 条中文当原文。用户点名的段落：
+source=`I thought I heard you two!...`，target=`我说听着动静耳熟呢！…`。
+
+测试：新增 `test_role_comment_provides_source`（role 注释行提供原文 +
+定位行不干扰）。回归：**406 passed**。
+
 ## 6. 用户操作指引
 
 需**重新导入**该游戏文件：旧 project.json 中 646 条假 pending 段将被

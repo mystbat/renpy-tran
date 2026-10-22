@@ -294,9 +294,14 @@ class RenpyParser:
                 break  # sibling header closes the block
             if cur.lstrip().startswith("#"):
                 # 官方翻译模板（Ren'Py 生成）形态：台词块内 `# "英文原文"`
-                # 注释行。记录之，供台词行作原文来源（对齐 2.0「原文注释」
-                # 列语义）；非引号注释（纯注释）不影响。
-                cm = re.match(r'^#\s*(["\'])(.*)\1\s*$', cur.lstrip())
+                # 或 `# role "英文原文"` 注释行。记录之，供台词行作原文
+                # 来源（对齐 2.0「原文注释」列语义）；非引号注释（定位行
+                # `# game/...` 等）不影响。
+                # BUGFIX(role-comment)：role 前缀（ter/kar 等无引号单词）
+                # 原正则不匹配 → 该块丢原文来源，中文台词被误判为
+                # unrpyc 已译形态（用户实测 2026-10-21：第 3 块起全部中招）。
+                cm = re.match(
+                    r'^#\s*(?:[\w.]+\s+)?(["\'])(.*)\1\s*$', cur.lstrip())
                 pending_src_comment = cm.group(2) if cm else None
                 i += 1
                 continue

@@ -183,6 +183,44 @@ def test_dialogue_source_forms() -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def test_role_comment_provides_source() -> None:
+    """BUGFIX(role-comment)：`# role "英文"` 注释行（带说话人前缀）也是
+    原文来源。
+
+    用户实测 2026-10-21：exp-1-3somes.rpy 第 3 块起注释行带 ter/kar 等
+    role 前缀，原正则不匹配 → 丢原文来源，中文台词被误判为 unrpyc
+    已译形态（source=中文译文，送翻=中文→中文）。
+    """
+    work = FIXTURES.parent / ".tmp_fix_old_new"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        f = work / "role_comment.rpy"
+        f.write_text(
+            'translate chinese2 a_1:\n'
+            '    # ter "I thought I heard you two!"\n'
+            '    ter "我说听着动静耳熟呢！"\n'
+            '\n'
+            'translate chinese2 a_2:\n'
+            '    # game/x.rpy:23\n'
+            '    # kar "If you asked me the first time."\n'
+            '    kar "如果我第一次见面时就问你。"\n',
+            encoding="utf-8",
+        )
+        segs = RenpyParser().parse_file(f, game_relpath="role_comment.rpy")
+        assert len(segs) == 2
+        # 带 role 注释行提供原文；中文台词为译文
+        assert segs[0].source == "I thought I heard you two!"
+        assert segs[0].target == "我说听着动静耳熟呢！"
+        assert segs[0].status == SegmentStatus.TRANSLATED
+        # 定位注释行（# game/...）不干扰；后面的 kar 注释行正常生效
+        assert segs[1].source == "If you asked me the first time."
+        assert segs[1].target == "如果我第一次见面时就问你。"
+        assert segs[1].status == SegmentStatus.TRANSLATED
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def test_orphan_new_paired_with_empty_old() -> None:
     """BUGFIX(orphan-new)：孤立 `new "Y"`（无 old 配对）→ 补一条空 old 配对。
 
