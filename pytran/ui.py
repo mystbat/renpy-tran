@@ -317,9 +317,15 @@ class PytranApp:
         # rows_to_terms(rows) -> (terms, auto_exempt)：空译名英文行自动进豁免
         merged, auto_exempt = rows_to_terms(list(terms_map.items()))
         profile.terms = merged
-        for ex in list(exempt_add) + auto_exempt:
-            if ex not in profile.exempt_english:
-                profile.exempt_english.append(ex)
+        # BUGFIX(exempt-replace)：免翻短语按**编辑后列表整体替换**。
+        # 原实现只追加不删除——用户在输入框里删掉的条目保存后原样
+        # 保留（修改"无效"）。现在：exempt_add 即用户编辑后的完整列表
+        # （含输入框全部行），auto_exempt（术语表空译名行）永远并入。
+        final: list[str] = []
+        for ex in list(exempt_add) + list(auto_exempt):
+            if ex and ex not in final:
+                final.append(ex)
+        profile.exempt_english = final
         profile.save(self.work_dir / self.state.project.term_profile)
 
     def _apply_rules(self, append: str) -> None:
