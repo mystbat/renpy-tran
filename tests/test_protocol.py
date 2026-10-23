@@ -75,8 +75,33 @@ def test_user_prompt_context_pairs():
     ctx = [(101, "I saw her.", "我看见了她。"), (102, "She left.", "她走了。")]
     text = build_user_prompt([(1, "And then?"), ], TermProfile(), context=ctx)
     assert "前文参考" in text
-    assert "101|I saw her." in text
+    # BUGFIX(ctx-uid-collision)：context 行不带数字编号（防与待翻译 uid 撞车）
+    assert "101|I saw her." not in text
+    assert '"I saw her."' in text
     assert "我看见了她。" in text
+
+
+def test_user_prompt_context_no_numbered_collision():
+    """BUGFIX(ctx-uid-collision)：context 区不得出现任何「数字|」形态的行。
+
+    旧实现 context 用 `{uid}|{src}` 展示，_normalize_context 对二元组按序
+    补号 0,1,2...，与重导后从 1 开始的待翻译 uid 大面积重叠——模型据此
+    输出错位（用户实测 2026-10-24：写回后重导新文件，预览译文错位）。
+    """
+    import re
+    # 经 provider._normalize_context 归一化后的二元组 context（位置补号 0,1）
+    ctx = [(0, "Old one", "旧译1"), (1, "Old two", "旧译2")]
+    text = build_user_prompt([(1, "New one"), (2, "New two")],
+                             TermProfile(),
+                             context=ctx)
+    # 待翻译区保留编号
+    assert "1|New one" in text
+    assert "2|New two" in text
+    # context 区不得有编号行
+    ctx_block = text.split("前文参考")[1].split("待翻译")[0]
+    assert not re.search(r"^\s*\d+\s*\|", ctx_block, re.M), ctx_block
+    # context 原文仍以引号形式展示（供语气衔接）
+    assert '"Old one"' in ctx_block
 
 
 def test_user_prompt_context_capped_at_three():
@@ -84,10 +109,10 @@ def test_user_prompt_context_capped_at_three():
     ctx = [(i, f"s{i}", f"t{i}") for i in range(1, 6)]
     text = build_user_prompt([(1, "x")], TermProfile(), context=ctx)
     assert len(ctx) > MAX_CONTEXT_LINES
-    assert "1|s1" not in text
-    assert "2|s2" not in text
-    assert "3|s3" in text
-    assert "5|s5" in text
+    assert '"s1"' not in text
+    assert '"s2"' not in text
+    assert '"s3"' in text
+    assert '"s5"' in text
 
 
 def test_user_prompt_without_context_has_no_context_header():
@@ -471,7 +496,9 @@ def test_provider_passes_context_and_terms():
     provider.translate_batch([(1, "Ian")], profile, context=[(0, "a", "甲")])
     user = client.chat.completions.calls[0]["messages"][1]["content"]
     assert "Ian=伊恩" in user
-    assert "0|a" in user
+    # BUGFIX(ctx-uid-collision)：context 行不带编号，只展示原文/译文对
+    assert '"a"' in user and "甲" in user
+    assert "0|a" not in user
 
 
 def test_provider_keep_declare_threading():

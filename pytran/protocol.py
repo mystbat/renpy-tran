@@ -31,8 +31,10 @@ __all__ = [
 
 # §4.1 系统提示词（设计文档原文五条规则；OpenAI 标准 messages 结构）
 DEFAULT_SYSTEM_PROMPT = (
-    "你是专业的游戏本地化译者。用户会给你若干行带编号的 Ren'Py 脚本文本，格式为「编号|文本」。\n"
-    "请严格按以下规则输出：\n"
+    "你是专业的游戏本地化译者。用户消息含两个区：「前文参考」与「待翻译」。\n"
+    "「前文参考」是已完成的原文→译文对照，仅供衔接语气，**既不是待翻译内容，"
+    "也不要为它输出任何 JSON**；只翻译「待翻译」区的行。\n"
+    "待翻译区每行格式为「编号|文本」。请严格按以下规则输出：\n"
     "1. 只输出 JSON 行，每行一个：{\"i\": <编号>, \"t\": \"<译文>\"}；不要输出任何解释、空行或代码块。\n"
     "2. 编号必须与输入完全一致，不得增删、不得改序，不得翻译编号或把它写进译文。\n"
     "3. 完整翻译每一行，不要省略、不要合并、不要拆分；保留全部 {w} 等待标签、"
@@ -178,8 +180,15 @@ def build_user_prompt(
         # §4.1「前文参考 2–3 条」。DECISION(§4.1)：超出上限时保留**最新的** N 条——
         # 与待翻译行距离越近的上下文对语气/称谓一致性越有价值，旧句子只会挤占 token。
         recent = list(context)[-MAX_CONTEXT_LINES:]
-        lines = [f"{uid}|{src}\n  → {dst}" for uid, src, dst in recent]
-        blocks.append("前文参考：\n" + "\n".join(lines))
+        # BUGFIX(ctx-uid-collision)：context 行**不带数字编号**。
+        # 旧实现用 `{uid}|{src}` 展示——context 的 uid 来自 _normalize_context
+        # 对二元组的按序补号（0,1,2...），与「待翻译」区的真实 uid 大面积
+        # 重叠（尤其多文件/重导后 uid 从 1 重新编号时，编号 1 同时出现在
+        # 前文参考与待翻译区）。模型据此输出的 `i` 可能指错行，造成
+        # 译文错位（用户实测 2026-10-24：写回后重导新文件，预览错位）。
+        # 改为引号包裹的纯文本行，从根上消除编号撞车。
+        lines = [f'"{src}"\n  → "{dst}"' for _uid, src, dst in recent]
+        blocks.append("前文参考（仅供语气衔接，**不要翻译**）：\n" + "\n".join(lines))
 
     body = "\n".join(f"{uid}|{text}" for uid, text in numbered_lines)
     blocks.append(f"待翻译（{len(numbered_lines)} 行）：\n{body}")
