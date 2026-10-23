@@ -235,3 +235,58 @@ def test_engine_emits_translate_stopped_on_stop(tmp_path) -> None:
         f"停止后应发 translate_stopped 事件，实际事件：{names}"
     data = next(d for n, d in events if n == "translate_stopped")
     assert data.get("remaining") == 1, "应报告剩余未译行数"
+
+
+# --------------------------------------------------------------------------- #
+# 翻译状态持久化：写回后的文件始终显示「已翻译」，不受后续重新导入影响
+# --------------------------------------------------------------------------- #
+def test_written_back_status_persists_after_reimport(gui: PytranApp,
+                                                     monkeypatch) -> None:
+    """回归：先写回 file1（显示「已翻译」），再导入 file2 后，file1 仍应
+    显示「已翻译」，而不是因离开当前工程而变回「-」/「未翻译」。"""
+    from pytran.models import GameFile
+
+    monkeypatch.setattr(
+        PytranApp, "_get_discovered_rpy_files",
+        lambda self: [Path("C:/g/game/file1.rpy"), Path("C:/g/game/file2.rpy")])
+
+    # 当前工程只含 file2（模拟「重新导入 file2」后 file1 已不在工程里）
+    gui.project = Project(
+        files=[GameFile(name="file2.rpy")], game_root="C:/g")
+    # file1 曾经写回过
+    gui._written_back_files = {"file1.rpy"}
+
+    gui._refresh_import_tree()
+    tree = gui._widgets["import_tree"]
+    rows = {tree.topLevelItem(i).text(1): tree.topLevelItem(i).text(4)
+            for i in range(tree.topLevelItemCount())}
+
+    assert rows.get("file1.rpy") == "已翻译", \
+        f"已写回的 file1 必须始终显示「已翻译」，实际：{rows}"
+    assert rows.get("file2.rpy") == "未翻译", \
+        f"当前工程内的 file2 应为「未翻译」，实际：{rows}"
+
+
+def test_writeback_accumulates_not_overwrites(gui: PytranApp,
+                                              monkeypatch) -> None:
+    """回归：再次写回时（工程换成只含 file2）不得清掉此前 file1 的「已翻译」。"""
+    from pytran.models import GameFile
+
+    gui._written_back_files = {"file1.rpy"}
+
+    class _FakeExporter:
+        def write_back_project(self, project, work_dir, journal) -> None:
+            return None
+
+    class _FakeDeps:
+        def __init__(self) -> None:
+            self.exporter = _FakeExporter()
+
+    gui.deps = _FakeDeps()
+    gui.project = Project(
+        files=[GameFile(name="file2.rpy")], game_root="C:/g")
+
+    gui._on_writeback()
+
+    assert gui._written_back_files == {"file1.rpy", "file2.rpy"}, \
+        f"写回应累计而非覆盖：{gui._written_back_files}"

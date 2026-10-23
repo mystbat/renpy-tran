@@ -218,6 +218,51 @@ def test_keep_original_current_no_selection_returns_false() -> None:
     assert st.keep_original_current() is False
 
 
+def test_navigate_after_status_change_lands_on_next_visible() -> None:
+    # W5g 回归：保留原文/通过/失败后游标不应“跳两格”。
+    # pending 筛选下，标记 KEEP_ORIGINAL 的条目会从列表消失，其后条目上移一格；
+    # 行定位（按 uid 顺序的下一可见条目）应使游标停在紧邻的下一条可见项。
+    proj = Project(segments=[
+        Segment(uid=1, file="a.rpy", locator="l1", feature="f1", kind="dialogue",
+                comment="", role="", source="s1", target="", status=SegmentStatus.PENDING),
+        Segment(uid=2, file="a.rpy", locator="l2", feature="f2", kind="dialogue",
+                comment="", role="", source="s2", target="", status=SegmentStatus.PENDING),
+        Segment(uid=3, file="a.rpy", locator="l3", feature="f3", kind="dialogue",
+                comment="", role="", source="s3", target="", status=SegmentStatus.PENDING),
+    ])
+    st = UiState(proj)
+    st.set_filter("pending")
+    st._review_index = 1          # 选中 uid2 (s2)
+    assert st.current_review().uid == 2
+    # 该 uid2 标记 KEEP_ORIGINAL → 从 pending 列表消失
+    st.keep_original_current()
+    assert proj.segments[1].status == SegmentStatus.KEEP_ORIGINAL
+    st.navigate_after_status_change(2)
+    items = st.review_items()
+    # 游标应停在 uid3 (s3)，即被移除项的紧邻下一条可见项，而非跳过它
+    assert st.current_review().uid == 3
+    assert [i.uid for i in items] == [1, 3]
+
+
+def test_navigate_after_status_change_all_filter_advances_one() -> None:
+    # all 筛选下，标记后条目仍可见，游标应前进一格（等同于原 +1 行为）
+    proj = Project(segments=[
+        Segment(uid=1, file="a.rpy", locator="l1", feature="f1", kind="dialogue",
+                comment="", role="", source="s1", target="", status=SegmentStatus.PENDING),
+        Segment(uid=2, file="a.rpy", locator="l2", feature="f2", kind="dialogue",
+                comment="", role="", source="s2", target="", status=SegmentStatus.PENDING),
+        Segment(uid=3, file="a.rpy", locator="l3", feature="f3", kind="dialogue",
+                comment="", role="", source="s3", target="", status=SegmentStatus.PENDING),
+    ])
+    st = UiState(proj)
+    st.set_filter("all")
+    st._review_index = 1
+    st.keep_original_current()        # 标记 uid2，仍可见
+    st.navigate_after_status_change(2)
+    assert st._review_index == 2     # 前进一格
+    assert st.current_review().uid == 3
+
+
 def test_keep_original_not_counted_as_done() -> None:
     proj = _make_project()
     proj.segments.append(Segment(
