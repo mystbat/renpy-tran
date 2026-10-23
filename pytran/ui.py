@@ -96,6 +96,9 @@ class PytranApp:
         # 导入页「翻译状态」列：本会话内已写回游戏目录的相对路径集合
         # （models.py 冻结不可落盘，故仅内存追踪；写回后置「已翻译」）。
         self._written_back_files: set[str] = set()
+        # W5h 全面审校：最近一次检查结果（内存），面板关闭即清空
+        self._audit_results: list[dict] = []
+        self._audit_dialog = None
 
     def on_event(self, name: str, data: dict) -> None:
         self._events.put((name, data or {}))
@@ -751,8 +754,15 @@ class PytranApp:
         page_review = QWidget()
         review_layout = QVBoxLayout(page_review)
         
-        # 审校页工具条：状态筛选 + 条目计数 + 分页显示
+        # 审校页工具条：全面审校 + 状态筛选 + 条目计数 + 分页显示
         review_bar = QHBoxLayout()
+
+        # W5h：全面审校——复检全部已导入段（V1–V6 + 术语未生效），
+        # 结果以分类面板呈现，双击定位回审校页。只读检查，不改数据。
+        self._widgets["btn_full_audit"] = QPushButton("全面审校")
+        self._widgets["btn_full_audit"].clicked.connect(self._on_full_audit)
+        review_bar.addWidget(self._widgets["btn_full_audit"])
+
         review_bar.addWidget(QLabel("筛选："))
         self._widgets["review_filter"] = QComboBox()
         # 选项由 UiState.REVIEW_FILTERS 驱动，先填充到位再接信号，
@@ -897,6 +907,109 @@ class PytranApp:
         """追加渲染下一批审校条目。"""
         self._review_display_cap += REVIEW_PAGE_SIZE
         self._refresh_review()
+
+    # ------------------------------------------------------------------
+    # W5h 全面审校
+    # ------------------------------------------------------------------
+    def _on_full_audit(self) -> None:
+        """全面审校按钮：复检全部已导入段并弹出分类结果面板（只读，不改数据）。"""
+        if not self.project.segments:
+            self._log("全面审校：当前工程没有任何段落。", level="warn")
+            return
+        profile = self._load_profile()
+        # 纯逻辑走 UiState.full_audit；结果存内存供面板/测试读取。
+        self._audit_results = self.state.full_audit(profile)
+        dlg = self._build_audit_dialog(self._audit_results)
+        self._audit_dialog = dlg
+        # 面板关闭即清空结果（任务书 §3：面板关闭 → 结果清空）
+        dlg.finished.connect(lambda _code: self._clear_audit())
+        dlg.exec()
+
+    def _clear_audit(self) -> None:
+        self._audit_results = []
+        self._audit_dialog = None
+
+    def _build_audit_dialog(self, results: list[dict]):
+        """构造全面审校结果面板（不阻塞；由调用方决定是否 exec）。
+
+        表格列：状态 / 文件:uid / 问题。每行对应一条 (段, 分类) 问题，
+        行首 QTableWidgetItem 用 UserRole 携带 uid，供双击定位。
+        """
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtWidgets import (
+            QDialog, QTableWidget, QTableWidgetItem, QHeaderView,
+            QAbstractItemView, QLabel, QVBoxLayout,
+        )
+
+        dlg = QDialog(self._window)
+        dlg.setWindowTitle("全面审校结果")
+        dlg.resize(760, 520)
+        layout = QVBoxLayout(dlg)
+
+        n_seg = len({r["uid"] for r in results})
+        n_issue = len(results)
+        summary = QLabel(
+            f"共扫描 {len(self.project.segments)} 段，命中 {n_seg} 段 / {n_issue} 处问题。"
+            if n_issue else
+            f"全面审校完成：共 {len(self.project.segments)} 段，未发现标签/转义/引号/英文/术语 异常。")
+        summary.setStyleSheet("color:#b03030; font-weight:bold;")
+        layout.addWidget(summary)
+
+        table = QTableWidget(0, 3)
+        table.setHorizontalHeaderLabels(["状态", "文件:uid", "问题"])
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch)
+
+        for r in results:
+            status_cn = REVIEW_FILTER_LABELS.get(
+                self._status_to_filter_key(r["status"]), r["status"])
+            for cat, detail in r["checks"]:
+                row = table.rowCount()
+                table.insertRow(row)
+                it0 = QTableWidgetItem(status_cn)
+                it0.setData(Qt.ItemDataRole.UserRole, r["uid"])
+                table.setItem(row, 0, it0)
+                table.setItem(row, 1, QTableWidgetItem(f"{r['file']}:{r['uid']}"))
+                table.setItem(row, 2, QTableWidgetItem(f"[{cat}] {detail}"))
+
+        # 双击定位：读出该行的 uid → 切到审校页对应段
+        table.cellDoubleClicked.connect(
+            lambda row, _col: self._locate_audit_uid(
+                table.item(row, 0).data(Qt.ItemDataRole.UserRole)))
+        layout.addWidget(table)
+        return dlg
+
+    @staticmethod
+    def _status_to_filter_key(status_name: str) -> str:
+        """把 SegmentStatus.name 映射到审校筛选 key（仅用于面板“状态”列展示）。"""
+        mapping = {
+            "PENDING": "pending",
+            "TRANSLATED": "translated",
+            "FAILED": "failed",
+            "KEEP_DECLARED": "keep_declared",
+            "KEEP_ORIGINAL": "keep_original",
+            "REVIEWED": "reviewed",
+        }
+        return mapping.get(status_name, "all")
+
+    def _locate_audit_uid(self, uid) -> None:
+        """双击定位：把审校页切到“全部”筛选下 uid 对应的段（只读，不改数据）。"""
+        if uid is None:
+            return
+        combo = self._widgets.get("review_filter")
+        if combo is not None:
+            keys = [combo.itemData(i) for i in range(combo.count())]
+            if "all" in keys:
+                combo.setCurrentIndex(keys.index("all"))  # 触发 _on_review_filter_changed
+        items = self.state.review_items()  # 此时已是 all 筛选
+        idx = next((i for i, it in enumerate(items) if it.uid == uid), None)
+        if idx is None:
+            self._log(f"全面审校定位失败：uid {uid} 不在审校列表中。", level="warn")
+            return
+        self.state._review_index = idx
+        self._on_step(3)  # 切到审校页并刷新（_refresh_review 在 idx 处高亮）
 
     def _displayed_review_rows(self) -> int:
         """当前列表里真实条目（不含尾部提示行）的行数。"""
@@ -1293,7 +1406,16 @@ class PytranApp:
 
     def _choose_directory(self) -> None:
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
-        
+
+        # BUGFIX(clear-during-translate)：翻译运行中禁止切换目录——换目录
+        # 会重置 self.project 并删 project.json，与 worker 的 _atomic_save 竞态。
+        if self._translating:
+            QMessageBox.warning(
+                self._window, "选择目录",
+                "翻译正在运行中，无法切换目录。\n\n"
+                "请先点「停止翻译」，待其结束后再操作。")
+            return
+
         # 决定文件对话框的初始目录：若已有游戏目录或文件，则从那里开始
         initial_dir = str(self.work_dir)
         if self.project.game_root and Path(self.project.game_root).exists():
@@ -1414,8 +1536,19 @@ class PytranApp:
 
         保留 game_root / 术语表（同目录重新导入即按当前解析逻辑重建）。
         有未保存的人工译文时弹确认，防误触。
+        BUGFIX(clear-during-translate)：翻译运行中禁止清空——worker 线程
+        持有旧 project 引用，其每轮 _atomic_save 会把旧数据整包写回
+        project.json，覆盖用户的清空与重导（用户实测 2026-10-23：
+        清空重导后旧错位数据"复活"与新数据混合）。
         """
         from PyQt6.QtWidgets import QMessageBox
+        if self._translating:
+            QMessageBox.warning(
+                self._window, "清空工程",
+                "翻译正在运行中，无法清空。\n\n"
+                "后台翻译线程持有旧工程数据，此时清空会被运行中的翻译覆盖。\n"
+                "请先点「停止翻译」，待其结束后再清空。")
+            return
         if not self.project.segments and not self.project.files:
             QMessageBox.information(self._window, "清空工程", "工程已经是空的。")
             return
@@ -1477,6 +1610,14 @@ class PytranApp:
 
     def _do_import_files(self, target_files: list[Path]) -> None:
         from PyQt6.QtWidgets import QMessageBox
+        # BUGFIX(clear-during-translate)：翻译运行中禁止导入——导入会替换
+        # self.project，而 worker 仍持有旧引用并 _atomic_save 覆盖磁盘。
+        if self._translating:
+            QMessageBox.warning(
+                self._window, "导入",
+                "翻译正在运行中，无法导入。\n\n"
+                "请先点「停止翻译」，待其结束后再导入。")
+            return
         parser = None
         try:
             from pytran.parser import RenpyParser
