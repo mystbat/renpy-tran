@@ -236,7 +236,12 @@ class RenpyParser:
         out: list[str] = []
         for idx, original in enumerate(lines):
             content, term = _split_keepends(original)
-            locator = f"# game/{self._file}:{idx + 1}"
+            # BUGFIX(regenerate-file-name)：locator 必须用参数 file_name，
+            # 而非 self._file（最后解析的文件）。多文件场景下 self._file
+            # 停留在最后一个文件——line_for 按 file_name 过滤了段，但键
+            # 用错文件名导致查不到任何段 → 除最后解析的文件外全部原样
+            # 输出（译文静默丢失，用户实测 2026-10-23）。
+            locator = f"# game/{file_name}:{idx + 1}"
             seg = line_for.get((file_name, locator))
             if seg is not None and seg.target:
                 out.append(_replace_dialogue(content, seg.target) + term)
