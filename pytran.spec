@@ -15,11 +15,12 @@ import os
 
 block_cipher = None
 
-# 需要显式随包的数据（examples / 文档），不含任何真实游戏或密钥
+# 需要显式随包的数据（examples / 文档 / 图标），不含任何真实游戏或密钥
 datas = [
     ("config.example.ini", "."),
     ("README.md", "."),
     ("requirements.txt", "."),
+    ("assets", "assets"),
 ]
 
 # 二次保险：绝不把 config.ini / 真实数据打进包
@@ -83,6 +84,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon="assets/pytran.ico",
 )
 
 coll = COLLECT(
