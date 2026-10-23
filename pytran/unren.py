@@ -313,7 +313,16 @@ class UnrenImpl(Unren):
                 rel = gf.game_relpath
                 if not rel:
                     continue
-                src = _find_source(rel, work_dir, game_root / "game")
+                # BUGFIX(stale-output-source)：解析源一律用游戏目录当前文件
+                # （=本次写回的对象 dst）。原 _find_source 优先选
+                # work_dir/output/ 下的旧产物——那是历史导出副本，可能比
+                # 游戏目录旧很多（用户实测 2026-10-23：基于 10-23 15:07 的
+                # 旧 output 写回，把 SDK 已修好的紧凑文件写成了 19515 行
+                # 的大空行臃肿版）。output 只作产物副本，不做解析源。
+                src = game_root / "game" / rel
+                if not src.is_file():
+                    # 游戏目录缺失（首次写回新文件）→ 回退 output/导入副本
+                    src = _find_source(rel, work_dir, game_root / "game")
                 parser.parse_file(src, game_relpath=rel)
                 text = parser.regenerate(project, rel)
                 if text == "":

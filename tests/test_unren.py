@@ -221,11 +221,22 @@ def test_builtin_skeleton_excludes_tl_dir(tmp_path: Path) -> None:
 
 
 def _make_project(game_root: str, rel: str, target: str) -> Project:
+    # BUGFIX(stale-output-source) 配套：locator 动态匹配 FAKE_GAME 实际行号。
+    # 写回解析源改为游戏目录文件后，"Hello, world." 在行 3（原 output 版本
+    # 无标题注释行是行 2）——fixture 不再硬编码行号。
+    game_file = Path(game_root) / "game" / rel
+    line_no = 2
+    if game_file.is_file():
+        for n, line in enumerate(
+                game_file.read_text(encoding="utf-8").splitlines(), 1):
+            if "Hello, world." in line:
+                line_no = n
+                break
     segs = [
         Segment(
             uid=1,
             file=rel,
-            locator=f"# game/{rel}:2",
+            locator=f"# game/{rel}:{line_no}",
             feature="translate chinese x_1:",
             kind="dialogue",
             comment="",
