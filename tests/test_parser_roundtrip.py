@@ -265,14 +265,7 @@ def test_skipped_block_preserved_and_counted() -> None:
 
 
 def test_multi_file_import_uid_unique() -> None:
-    """BUGFIX(dup-uid)：多文件导入后 uid 必须全局唯一且连续。
-
-    解析器按文件局部计数（每个 parse_file 从 1 起）；uid 是引擎
-    seg_map / 预览回查 / 审校游标的全局主键。用户实测 2026-10-21：
-    10 文件 1468 段仅 436 个唯一 uid——预览显示别的句子的译文
-    （rpg.rpy uid55 的事件回查到 loca_screen.rpy 的 uid55）、写回错行。
-    build_project 现按传入顺序统一重编 1..N。
-    """
+    """多文件导入后 uid 全局唯一（DECISION(stable-uid)：路径 hash + 段序号）。"""
     work = FIXTURES.parent / ".tmp_fix_old_new"
     work.mkdir(parents=True, exist_ok=True)
     try:
@@ -293,11 +286,13 @@ def test_multi_file_import_uid_unique() -> None:
         # 解析层：各文件局部计数（既有行为，uid 撞车）
         assert [s.uid for s in segs if s.file == "a.rpy"] == [1, 2, 3]
         assert [s.uid for s in segs if s.file == "b.rpy"] == [1, 2]
-        # build_project 统一重编：全局唯一且连续
+        # build_project 稳定分配：全局唯一且跨导入稳定
+        from pytran.uids import make_uid
         project = build_project(segs)
         uids = [s.uid for s in project.segments]
-        assert uids == [1, 2, 3, 4, 5]
-        assert project.next_uid == 6
+        assert len(set(uids)) == 5
+        assert uids == ([make_uid("a.rpy", i) for i in (1, 2, 3)]
+                        + [make_uid("b.rpy", i) for i in (1, 2)])
         # 段与文件的对应关系不变（a.rpy 三条在前、b.rpy 两条在后）
         assert [s.file for s in project.segments] == ["a.rpy", "a.rpy",
                                                        "a.rpy", "b.rpy", "b.rpy"]

@@ -492,13 +492,24 @@ class PytranApp:
         return dst
 
     def _merge_import(self, segs: list, gf: list, files: list) -> None:
-        """合并导入（任务书 §3）：复用 backfill 兜底链对齐旧/新。
+        """合并导入（任务书 §3）：按稳定 uid 对位旧/新，保留旧译文。
 
-        * 旧工程里已译/已审校的行：按归一化特征码匹配到新的同名位置，
-          保留旧 target 并置为 REVIEWED；
-        * 新解析出的行（无匹配）：PENDING；
-        * 旧译文未能匹配到新结构（如旧 key 被删除）：记入「遗留译文」日志。
-        * term_profile 保持不变（沿用当前 profile.json，区别于「清空工程」）。
+        DECISION(stable-uid, 用户裁决 2026-10-24）：uid 是唯一性主键，
+        合并导入**按 uid 对位**——不做任何原文/相似度猜测。
+
+        uid 由「文件路径 hash + 文件内序号」派生（pytran.uids.make_uid）：
+        同文件的同一条段在任何次导入得到同一 uid，因此旧译文直接落到
+        新工程的同名同位置段上；不同文件 hash 不同永不撞车。
+
+        * 旧工程已译/已审校行 → 按 uid 落到新工程同名段，保留 target、
+          置 REVIEWED（人工确认过的内容不被自动重译覆盖）；
+        * 新解析出的行（uid 无旧译文）→ PENDING；
+        * 旧 uid 在新工程不存在（原文结构变了/行被删）→ 记「遗留译文」日志。
+
+        2026-10-24 事故根因是 uid 分配不稳定（每次导入从 1 重编 → 新旧
+        uid 撞车 → 写回译文张冠李戴，15 文件全污染，已从 bak/game 快照
+        恢复）；分配稳定后 uid 匹配即安全。详见
+        docs/BUGFIX-merge-uid-collision.md。
         """
         from pytran.project import build_project
         from pytran.backfill import (
@@ -507,7 +518,8 @@ class PytranApp:
         )
 
         game_root = self.project.game_root
-        # 用新解析结果搭一个全 PENDING 的基线工程，再回填旧译文。
+        # 用新解析结果搭基线工程（uid 由稳定分配器重编——同文件同段
+        # 与旧工程 uid 一致）。
         new_project = build_project(segs, files=gf, game_root=str(game_root or ""),
                                     term_profile=self.project.term_profile)
         old_segs = self.project.segments
@@ -526,52 +538,15 @@ class PytranApp:
         ]
 
         def _on_warn(kind, row, seg):  # noqa: ANN001
-            self._log(f"合并导入：相似度兜底命中 uid={seg.uid}（locator={row.locator}），请人工复核")
+            self._log(f"合并导入：兜底命中 uid={seg.uid}（locator={row.locator}），请人工复核")
 
-        # BUGFIX(merge-uid-collision)：uid 是「单次导入内的段序号」，跨导入
-        # 无语义——旧 uid=5 的译文会写到新 uid=5（完全不同的另一段）上，
-        # 写回后 15 个文件译文全部张冠李戴（用户实测 2026-10-24，已从事发
-        # 前的 bak/game 快照恢复）。故：
-        #   ① match_translations 禁用 uid 级匹配（use_uid_matching 默认 False）；
-        #   ② 先用 (文件, 原文) 精确对位——同一文件的同一句原文，译文直接沿用；
-        #   ③ 特征码/相似度兜底只在前两级未命中时生效。
-        by_file_src: dict[tuple[str, str], list] = {}
-        for seg in new_project.segments:
-            by_file_src.setdefault((seg.file, seg.source), []).append(seg)
-
-        exact_rows: list = []
-        fuzzy_rows: list = []
-        for row in rows:
-            # 找旧段来自哪个文件（row.locator 形如 "# game/<file>:<line>"）
-            old_file = None
-            for s in old_segs:
-                if (s.uid == row.uid and s.source == row.source
-                        and s.feature == row.feature):
-                    old_file = s.file
-                    break
-            if old_file and by_file_src.get((old_file, row.source)):
-                exact_rows.append((row, old_file))
-            else:
-                fuzzy_rows.append(row)
-
-        keep_map: dict[int, str] = {}
-        consumed_exact: set[int] = set()
-        for row, old_file in exact_rows:
-            for seg in by_file_src[(old_file, row.source)]:
-                if seg.uid not in consumed_exact:
-                    consumed_exact.add(seg.uid)
-                    keep_map[seg.uid] = row.target
-                    break
-
-        if fuzzy_rows:
-            outcome: MatchOutcome = match_translations(
-                [s for s in new_project.segments if s.uid not in consumed_exact],
-                fuzzy_rows,
-                similarity_threshold=SIMILARITY_THRESHOLD, on_warning=_on_warn
-            )
-            for m in outcome.matches:
-                keep_map[m.segment.uid] = m.row.target
-
+        # uid 为主键精确对位；旧 uid 不在新工程（结构变化）时，特征码/
+        # 相似度兜底仅作提示，命中仍要求人工复核（on_warning）。
+        outcome: MatchOutcome = match_translations(
+            new_project.segments, rows,
+            similarity_threshold=SIMILARITY_THRESHOLD, on_warning=_on_warn
+        )
+        keep_map = {m.segment.uid: m.row.target for m in outcome.matches}
         for seg in new_project.segments:
             if seg.uid in keep_map:
                 seg.target = keep_map[seg.uid]
@@ -582,20 +557,16 @@ class PytranApp:
         self.state.goto(2)
         JsonProjectStore().save(self.project, self.work_dir)
 
-        merged = len(keep_map)
-        fuzzy_unmatched: list = []
-        if fuzzy_rows:
-            fuzzy_unmatched = [
-                r for r in fuzzy_rows
-                if r.source not in {s.source for s in new_project.segments
-                                    if s.uid in keep_map}
-            ]
-        legacy = len(fuzzy_unmatched)
+        merged = len(outcome.matches)
+        by_uid_hits = sum(1 for m in outcome.matches if m.method == "uid")
+        fallback_hits = merged - by_uid_hits
+        legacy = len(outcome.unmatched)
         self._log(
-            f"合并导入完成：新解析 {len(segs)} 段，回填已审校译文 {merged} 行、"
-            f"{legacy} 行旧译文未匹配（见下方「遗留译文」）"
+            f"合并导入完成：新解析 {len(segs)} 段，按 uid 对位回填 {by_uid_hits} 行"
+            f"、兜底命中 {fallback_hits} 行、{legacy} 行旧译文未匹配"
+            f"（见下方「遗留译文」）"
         )
-        for row in fuzzy_unmatched:
+        for row in outcome.unmatched:
             self._log(
                 f"遗留译文（未匹配，建议人工处理）：feature={row.feature!r} "
                 f"locator={row.locator!r} target={row.target!r}"

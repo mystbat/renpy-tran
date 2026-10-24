@@ -48,27 +48,18 @@ def test_normalize_feature_strips_and_unifies_quotes_and_colons():
 
 
 # ----------------------------- §6.2 uid 精确 -----------------------------
-# DECISION(BUGFIX(merge-uid-collision))：uid 是「单次导入内的段序号」
-# （build_project 每次从 1 重编），跨导入毫无语义。合并导入若按 uid 匹配，
-# 旧 uid=5 的译文会写到新 uid=5（完全不同的另一段）——用户实测 2026-10-24
-# 因此写回后 15 个文件译文全部张冠李戴。uid 级匹配默认关闭，仅在
-# 同会话内 CSV 回填（导入后未重编 uid）时由调用方显式开启。
+# DECISION(stable-uid, 用户裁决 2026-10-24)：uid 是唯一性主键，级匹配
+# 默认开启。2026-10-24 合并导入事故的根因不是「uid 匹配」，而是 uid
+# 分配不稳定（每次导入从 1 重编 → 新旧 uid 撞车）。现已改为「文件路径
+# hash + 文件内序号」稳定分配（pytran.uids.make_uid），同文件同段跨导入
+# uid 一致，uid 级匹配从此安全可靠。详见
+# docs/BUGFIX-merge-uid-collision.md。
 
 
-def test_uid_matching_disabled_by_default():
-    """默认不按 uid 匹配：唯一相同点是 uid，其余全不同 → 不匹配。"""
+def test_match_by_uid_exact():
     segs = [_seg(10, "say", "a.rpy:5", "hello")]
     rows = [_row(uid=10, feature="other", locator="zzz", source="x", target="你好")]
     out = match_translations(segs, rows)
-    assert out.matches == []
-    assert len(out.unmatched) == 1
-
-
-def test_uid_matching_opt_in_for_same_session():
-    """显式 use_uid_matching=True 时 uid 级匹配恢复（同会话 CSV 回填用）。"""
-    segs = [_seg(10, "say", "a.rpy:5", "hello")]
-    rows = [_row(uid=10, feature="other", locator="zzz", source="x", target="你好")]
-    out = match_translations(segs, rows, use_uid_matching=True)
     assert len(out.matches) == 1
     m = out.matches[0]
     assert m.method == "uid"
@@ -76,14 +67,26 @@ def test_uid_matching_opt_in_for_same_session():
     assert out.unmatched == []
 
 
-def test_uid_collision_does_not_cross_match():
-    """uid 相同但 feature/locator/source 全不同 → 绝不错配（回归守卫）。"""
-    segs = [_seg(5, "translate chinese other:", "b.rpy:5", "Totally different")]
-    rows = [_row(uid=5, feature="translate chinese target:",
-                 locator="# game/a.rpy:5", source="Original English",
-                 target="这是完全另一句的译文")]
+def test_match_uid_takes_precedence_over_feature():
+    # 同一 feature 匹配到另一 uid，但 uid 命中优先
+    segs = [
+        _seg(10, "say", "a.rpy:5", "hello"),
+        _seg(20, "say", "a.rpy:9", "world"),
+    ]
+    rows = [_row(uid=10, feature="say", locator="a.rpy:9", source="world", target="X")]
     out = match_translations(segs, rows)
-    assert out.matches == [], "uid 撞车不应产生匹配"
+    assert out.matches[0].method == "uid"
+    assert out.matches[0].segment.uid == 10
+
+
+def test_uid_matching_opt_out_for_untrusted_source():
+    """uid 不可信（外部 CSV 乱序 uid）时显式关闭，退特征码兜底。"""
+    segs = [_seg(10, "say", "a.rpy:5", "hello")]
+    rows = [_row(uid=999, feature="say", locator="a.rpy:5",
+                 source="hello", target="你好")]
+    out = match_translations(segs, rows, use_uid_matching=False)
+    assert len(out.matches) == 1
+    assert out.matches[0].method == "feature"
 
 
 # ----------------------------- §6.2 特征码归一化 -----------------------------

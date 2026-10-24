@@ -91,25 +91,25 @@ def match_translations(
     *,
     similarity_threshold: float = SIMILARITY_THRESHOLD,
     on_warning: Optional[Callable[[str, TranslationRow, Segment], None]] = None,
-    use_uid_matching: bool = False,
+    use_uid_matching: bool = True,
 ) -> MatchOutcome:
     """§6.2 兜底链：为每条外来译文匹配一个 Segment。
 
     匹配优先级（命中即停）：
-    1. ``uid`` 精确（主键）——**默认关闭**，见下方 DECISION；
+    1. ``uid`` 精确（主键，默认开启）；
     2. 特征码归一化后等值；
     3. 定位符相同且 ``SequenceMatcher`` 相似度 ≥ 阈值（命中打 warning，§6.2 末级兜底）；
     4. 三级均失败 → 计入 ``unmatched``。
 
     一个 Segment 至多被一条译文占用（``consumed`` 记录已匹配 uid），避免重复写回。
 
-    DECISION(BUGFIX(merge-uid-collision))：``use_uid_matching`` 默认 False。
-    uid 是「单次导入内的段序号」（build_project 每次从 1 重编），**跨导入
-    毫无语义**。合并导入（ui._merge_import）若按 uid 精确匹配，旧工程
-    uid=5 的译文会写到新工程 uid=5（完全不同的另一段）上——用户实测
-    2026-10-24：合并导回后写回，15 个文件译文全部张冠李戴（common.rpy
-    第 0 对 new 变成别处译文）。跨导入对齐只能用特征码（label）与
-    相似度+定位符；同一次会话内的 CSV 回填（import_csv）可显式开启。
+    DECISION(stable-uid, 用户裁决 2026-10-24)：uid 是唯一性主键，
+    ``use_uid_matching`` 默认 **True**。2026-10-24 合并导入事故的根因
+    不是「uid 匹配」本身，而是 uid 分配不稳定（每次导入从 1 重编，
+    新旧 uid 撞车）。现已改为「文件路径 hash + 文件内序号」稳定分配
+    （pytran.uids.make_uid）——同文件同段跨导入 uid 一致，uid 级匹配
+    从此安全可靠。CSV/迁移等 uid 不可信的场景可显式关闭，退到
+    特征码/相似度兜底。
     """
     segs = list(segments)
     row_list = list(rows)
@@ -140,9 +140,8 @@ def match_translations(
         seg: Optional[Segment] = None
         method: Optional[str] = None
 
-        # 1) uid 精确（主键）——默认关闭：跨导入 uid 无语义（见 DECISION）
-        if (use_uid_matching and row.uid is not None
-                and row.uid in uid_index):
+        # 1) uid 精确（主键）——uid 已跨导入稳定（见 DECISION(stable-uid)）
+        if use_uid_matching and row.uid is not None and row.uid in uid_index:
             seg = take(uid_index[row.uid])
             if seg is not None:
                 method = "uid"
