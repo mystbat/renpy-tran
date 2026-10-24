@@ -1450,25 +1450,47 @@ class PytranApp:
                     continue
                 rows.append((src, dst))
 
-            dups = detect_duplicate_originals(rows)
-            terms_map, auto_exempt = rows_to_terms(rows)
+            # W5b-续 防误清空：对话框打开时 profile 已有术语，但用户手头表格
+            # 被清空（误删行 / 刚导入了空 CSV / 误点）时，禁止用空表覆盖既有
+            # 术语，改用警告并保留原 profile.terms（避免数据丢失）。
+            existing_terms = dict(profile.terms or {})
+            dups: list[str] = []  # 仅在真正改写术语表时填充
+            if not rows and existing_terms:
+                QMessageBox.warning(
+                    dlg, "术语表",
+                    f"术语表已清空，但当前工程原有 {len(existing_terms)} 条术语。"
+                    "为避免误删，本次保存**不会**清空既有术语。\n"
+                    "如确需清空，请先在术语表中确认无误后再保存。")
+            else:
+                dups = detect_duplicate_originals(rows)
+                terms_map, auto_exempt = rows_to_terms(rows)
 
-            exempt_add: list[str] = list(auto_exempt)
-            # B4：白名单开关控制「免翻英文短语」输入框是否生效
-            if exempt_toggle.isChecked():
-                for ex in exempt_edit.toPlainText().splitlines():
-                    ex = ex.strip()
-                    if ex and ex not in exempt_add:
-                        exempt_add.append(ex)
-            self._apply_terms(terms_map, exempt_add)
+                exempt_add: list[str] = list(auto_exempt)
+                # B4：白名单开关控制「免翻英文短语」输入框是否生效
+                if exempt_toggle.isChecked():
+                    for ex in exempt_edit.toPlainText().splitlines():
+                        ex = ex.strip()
+                        if ex and ex not in exempt_add:
+                            exempt_add.append(ex)
+                self._apply_terms(terms_map, exempt_add)
 
             append = rules_edit.toPlainText().strip()
-            self._apply_rules(append)
+            # W5b-续 防误清空：同理，原有 system_append 规则非空但用户清空了
+            # 规则框时，保留既有规则而非抹空。
+            existing_append = (profile.prompt_overrides or {}).get("system_append", "") or ""
+            if not append and existing_append:
+                QMessageBox.warning(
+                    dlg, "翻译规则",
+                    "翻译规则已清空，但当前工程原有自定义规则。"
+                    "为避免误删，本次保存**不会**清空既有规则。")
+            else:
+                self._apply_rules(append)
 
             # W5b-续：保存时同步导出用户易编辑的术语表 CSV（glossary.csv）
             from pytran.terms import write_glossary_csv_rows
             try:
-                csv_path = write_glossary_csv_rows(rows, self.work_dir)
+                csv_path = write_glossary_csv_rows(
+                    profile_to_rows(profile), self.work_dir)
             except OSError as exc:
                 csv_path = None
                 logging.getLogger(__name__).warning("导出 glossary.csv 失败: %s", exc)
@@ -1476,11 +1498,12 @@ class PytranApp:
             # B6：保存结果汇总（W5b §3.2「弹窗汇总保存结果」）
             parts = [
                 "已保存到 config.ini / profile.json。",
-                f"术语 {len(terms_map)} 条，免翻短语 {len(exempt_add)} 条。",
+                f"术语 {len(profile.terms or {})} 条，"
+                f"免翻短语 {len(profile.exempt_english or [])} 条。",
             ]
             if csv_path is not None:
                 parts.append(f"术语表 CSV：{csv_path}")
-            if dups:
+            if dups:  # 仅当真正改写术语表时才可能有重复合并提示
                 parts.append(f"重复原文已合并（后值覆盖）：{'、'.join(dups[:5])}"
                              + ("…" if len(dups) > 5 else ""))
             parts.append("API Key 写入本机 config.ini（已 gitignore，不进版本库）；"
