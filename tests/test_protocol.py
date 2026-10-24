@@ -33,7 +33,7 @@ from pytran.protocol import (
     normalize_keep_flag,
     parse_response,
 )
-from pytran.providers import OpenAIProvider
+from pytran.providers import TIMEOUT_MAX, TIMEOUT_REF_LINES, OpenAIProvider
 
 
 # ---------------------------------------------------------------------------
@@ -572,3 +572,70 @@ def test_provider_logs_truncated_response_preview(caplog):
         provider.translate_batch([(1, "Hello")], TermProfile())
     assert caplog.text  # 有日志
     assert "啊" * 500 not in caplog.text  # 只记前 N 字符（§12）
+
+
+# ---------------------------------------------------------------------------
+# BUGFIX(timeout-amplify)：超时不得被 SDK 层放大，且须随批量放大
+#
+# 用户实测（2026-10-24，清空工程重新导入后点翻译）：
+#   进度条一直滑 → APITimeoutError → 「2s 后重试（1/2）」循环。
+# 根因：openai SDK 默认 max_retries=2 叠在 _request_with_retry 之上，
+# 一次逻辑尝试 = 3 × timeout ≈ 181.9s；且 60s 固定超时对 50 行满块本就不够。
+# ---------------------------------------------------------------------------
+
+
+def test_build_client_disables_sdk_level_retries(monkeypatch):
+    """SDK 自带重试必须关掉，否则 3×timeout 放大（BUGFIX(timeout-amplify)）。"""
+    import openai
+
+    captured: dict = {}
+
+    def spy_init(self, *args, **kwargs):  # noqa: ANN001
+        captured.update(kwargs)
+        captured["_args"] = args
+        # 不真正构造：避免需要网络/校验，仅断言入参
+        self.__dict__["_spy"] = True
+
+    monkeypatch.setattr(openai.OpenAI, "__init__", spy_init)
+    OpenAIProvider._build_client(Config(api_key="sk-test-key", model="m1"))
+
+    assert captured.get("max_retries") == 0, \
+        f"SDK 重试必须显式置 0，实际 {captured.get('max_retries')!r}"
+    assert captured.get("timeout") == 120.0
+    assert captured.get("api_key") == "sk-test-key"
+
+
+def test_effective_timeout_scales_with_line_count():
+    """满块请求按行数放大超时，且有硬上限（BUGFIX(timeout-amplify)）。"""
+    provider = OpenAIProvider(_config(timeout=60.0), client=FakeClient([]))
+    assert provider._effective_timeout(0) == 60.0
+    assert provider._effective_timeout(1) == 60.0
+    assert provider._effective_timeout(TIMEOUT_REF_LINES) == 60.0
+    assert provider._effective_timeout(TIMEOUT_REF_LINES + 1) == 120.0  # 向上取整
+    assert provider._effective_timeout(50) == 300.0                     # block_lines=50
+    assert provider._effective_timeout(10_000) == TIMEOUT_MAX           # 硬上限
+
+
+def test_translate_batch_timeout_covers_whole_block():
+    """50 行满块的实际请求超时必须远超旧的固定 60s（用户 bug 的直接成因）。"""
+    provider, client, _ = _provider(
+        ['{"i": 1, "t": "你好"}'], timeout=60.0, block_lines=50,
+    )
+    lines = [(i, f"Hello {i}") for i in range(1, 51)]
+    provider.translate_batch(lines, TermProfile())
+    sent_timeout = client.chat.completions.calls[0]["timeout"]
+    assert sent_timeout == 300.0, f"50 行应放大到 300s，实际 {sent_timeout}"
+
+
+def test_single_logical_attempt_bounded_by_one_timeout():
+    """一次逻辑尝试的总耗时上限 = timeout + 退避，不被 SDK 再乘 3 倍。
+
+    回归口径：max_retry_rounds=1 时，translate_batch 只能发出 1 次请求。
+    """
+    provider, client, sleeps = _provider(
+        [TimeoutError("timed out")], timeout=60.0, max_retry_rounds=1,
+    )
+    with pytest.raises(ProviderError):
+        provider.translate_batch([(1, "Hello")], TermProfile())
+    assert len(client.chat.completions.calls) == 1  # 无 SDK 层重复请求
+    assert sleeps == []                             # 无退避（只有 1 次尝试）

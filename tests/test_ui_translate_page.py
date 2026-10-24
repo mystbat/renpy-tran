@@ -220,6 +220,68 @@ def test_retry_failed_noop_when_no_failures(gui: PytranApp, monkeypatch) -> None
     assert not started, "无失败项时不应启动翻译"
 
 
+def test_retry_failed_works_after_a_previous_stop(
+        gui: PytranApp, monkeypatch, tmp_path) -> None:
+    """BUGFIX(stop-flag-sticky) 回归：点过一次「停止」后，「重试失败项」必须真的跑。
+
+    用户实测：清空工程、重新导入 script.rpy 后点翻译 → 超时失败；
+    再点「重试失败项」，日志立刻出现
+    「重试 206 个失败项…… / 翻译已被用户停止」，一行都没翻。
+
+    根因：``_ensure_engine_ready`` 复用同一个 engine 实例，而
+    ``TranslationEngine._stop_requested`` 被 ``stop()`` 置 True 后再无人复位，
+    于是后续每次 ``run()`` 都在第一个循环检查处退出。
+    """
+    import time
+
+    from pytran.engine import TranslationEngine
+    from pytran.validators import Validator
+
+    calls = []
+
+    class GoodProvider:
+        def translate_batch(self, numbered_lines, profile, context=None,
+                            allow_keep_declare=False, use_fallback_model=False):
+            calls.append(len(numbered_lines))
+            return {uid: f"译文{uid}" for uid, _src in numbered_lines}
+
+    engine = TranslationEngine(GoodProvider(), Validator())
+    engine.stop()  # 模拟「上一次运行被用户停止」留下的粘连标志
+    assert engine._stop_requested is True
+
+    class FakeDeps:
+        pass
+
+    deps = FakeDeps()
+    deps.engine = engine
+    deps.config = _config_for(tmp_path)
+    gui.deps = deps
+
+    monkeypatch.setattr(PytranApp, "_ensure_engine_ready", lambda self: True)
+    monkeypatch.setattr(PytranApp, "_load_profile",
+                        lambda self: type("P", (), {})())
+    monkeypatch.setattr(PytranApp, "_confirm_budget", lambda self, **k: True)
+
+    gui._retry_failed()
+
+    # worker 在后台线程里跑，等它真正发出请求（最多 10s）。
+    # 不依赖事件循环消费 translate_finished，只看 provider 是否被调用。
+    deadline = time.time() + 10
+    while time.time() < deadline and not calls:
+        time.sleep(0.02)
+
+    assert calls, "「重试失败项」必须真的发出翻译请求（不得被上次的停止标志拦下）"
+    assert engine._stop_requested is False, "运行结束后停止标志应已复位"
+    labels = gui._widgets["progress_label"].text()
+    assert "已停止" not in labels, f"不应进入停止终态，实际：{labels}"
+
+
+def _config_for(tmp_path):
+    from pytran.config import Config
+    return Config(work_dir=str(tmp_path), max_workers=1, block_lines=10,
+                  context_lines=0, max_retry_rounds=0)
+
+
 # --------------------------------------------------------------------------- #
 # A6：成本闸
 # --------------------------------------------------------------------------- #

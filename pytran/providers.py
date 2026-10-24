@@ -38,6 +38,17 @@ BACKOFF_FACTOR = 2.0
 _RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
 _PREVIEW_CHARS = 120
 
+# BUGFIX(timeout-amplify) 2026-10-24：超时口径。
+# 用户实测（清空工程重新导入后点翻译）：进度条一直滑 → APITimeoutError
+# → 「2s 后重试（1/2）」。两个叠加缺陷：
+#   ① openai SDK 默认 max_retries=2，叠在本模块 _request_with_retry 之上，
+#      一次逻辑尝试 = 3 × timeout ≈ 181.9s，而进度条此时是不确定态；
+#   ② 固定 timeout=60s 对 50 行满块本就不够（实测推理模型 177~275s）。
+# 对策：SDK 层重试显式关掉（重试只由 §4.3 的单层状态机负责），
+#      超时按本次批量行数线性放大并设硬上限。
+TIMEOUT_REF_LINES = 10   # 基准行数：≤10 行用 config.timeout 原值
+TIMEOUT_MAX = 900.0      # 硬上限，避免异常配置把单次请求拖到不可控
+
 
 class OpenAIProvider:
     """Provider 实现（interfaces.Provider）。`client` 可注入，便于测试替身。"""
@@ -114,6 +125,8 @@ class OpenAIProvider:
         ctx = self._normalize_context(context)
         messages = build_messages(numbered_lines, profile, ctx, allow_keep_declare)
         params = build_request_params(self._config, messages, use_fallback_model)
+        # BUGFIX(timeout-amplify)：按本批行数放大超时，覆盖整块生成耗时。
+        params["timeout"] = self._effective_timeout(len(numbered_lines))
         sources = {uid: text for uid, text in numbered_lines}
         ids = [uid for uid, _ in numbered_lines]
 
@@ -135,6 +148,20 @@ class OpenAIProvider:
         return dict(parsed.results)
 
     # -- 内部 -----------------------------------------------------------------
+    def _effective_timeout(self, line_count: int) -> float:
+        """按本次批量行数放大超时（BUGFIX(timeout-amplify)）。
+
+        `config.timeout` 是「10 行基准块」的口径；块越大，单次生成越久。
+        向上取整到 TIMEOUT_REF_LINES 的整数倍，并夹在 [base, TIMEOUT_MAX]。
+        `timeout <= 0` 视为「不限」，直接给硬上限。
+        """
+        base = float(self._config.timeout)
+        if base <= 0:
+            return TIMEOUT_MAX
+        lines = max(0, int(line_count))
+        batches = (lines + TIMEOUT_REF_LINES - 1) // TIMEOUT_REF_LINES
+        return min(TIMEOUT_MAX, max(base, base * batches))
+
     def _require_api_key(self) -> None:
         # ADR-0004：key 只来自环境/配置注入；缺失时给出可操作提示，不回显任何值
         if not getattr(self._config, "api_key", ""):
@@ -225,7 +252,14 @@ class OpenAIProvider:
             from openai import OpenAI  # type: ignore
         except ImportError as exc:  # pragma: no cover - 取决于运行环境
             raise ProviderError("未安装 openai SDK：pip install openai>=1.30") from exc
-        kwargs: dict[str, Any] = {"api_key": config.api_key, "timeout": float(config.timeout)}
+        kwargs: dict[str, Any] = {
+            "api_key": config.api_key,
+            "timeout": float(config.timeout),
+            # BUGFIX(timeout-amplify)：SDK 自带重试必须关掉，否则
+            # 一次逻辑尝试 = (max_retries+1) × timeout，把 §4.3 的单层
+            # 重试放大成 3 倍，用户侧表现为「进度条一直滑」。
+            "max_retries": 0,
+        }
         if getattr(config, "api_url", ""):
             kwargs["base_url"] = config.api_url
         return OpenAI(**kwargs)

@@ -59,12 +59,56 @@ class TranslationEngine:
         self.provider = provider
         self.validator = validator
         self.store = store or JsonProjectStore()
-        # 协作式中断标志（§9 停止按钮）。**不在 run() 内重置**——
+        # 协作式中断标志（§9 停止按钮）。**不在 run() 入口重置**——
         # 否则会吞掉 run() 之前设置的 stop 请求（问题清单 N4/A7）。
+        #
+        # BUGFIX(stop-flag-sticky) 2026-10-24：标志的生命周期收敛为
+        # 「随本轮运行一起结束」——run() 退出时（正常/异常/停止）复位，
+        # 保证一次 stop() 不会污染后续运行。用户实测：超时失败后点
+        # 「重试失败项」，日志立刻「翻译已被用户停止」，一行都没翻。
+        # 原因正是 stop() 置 True 后没有任何出口去复位它，而 UI 复用
+        # 同一个 engine 实例（_ensure_engine_ready）。
+        # 若 stop() 发生在**没有 run() 在跑**的时刻，就没有出口可复位，
+        # 故另提供 reset_stop()，由 UI 在启动新一轮前显式调用。
         self._stop_requested = False
+        # 运行序号：旧一轮的收尾不得清掉新一轮刚收到的 stop 请求（跨线程竞态）。
+        self._run_seq = 0
 
     # -- 主入口 ---------------------------------------------------------------
     def run(
+        self,
+        project: Project,
+        config: Config,
+        profile: TermProfile,
+        on_event: Optional[EventCallback] = None,
+        only_uids: Optional[set[Uid]] = None,
+    ) -> Project:
+        """翻译主入口（BUGFIX(stop-flag-sticky)）。
+
+        停止标志的复位放在 `finally`：无论正常结束、抛异常还是被停止，
+        本轮退出时都把它清掉，下次 run() 从干净状态开始。
+        `_run_seq` 守卫用于「旧一轮的 finally 晚于新一轮开始」的情形——
+        此时不能把新一轮刚设置的 stop 请求清掉。
+        """
+        self._run_seq += 1
+        my_seq = self._run_seq
+        try:
+            return self._run_inner(project, config, profile, on_event, only_uids)
+        finally:
+            if self._run_seq == my_seq:
+                self._stop_requested = False
+
+    def reset_stop(self) -> None:
+        """清掉遗留的停止请求（BUGFIX(stop-flag-sticky)）。
+
+        run() 的 `finally` 只能覆盖「停止发生在运行期间」的情况；若用户在
+        两轮之间点了停止（或上一轮在 UI 侧已放弃），标志会悬着。UI 在
+        启动新一轮之前调用本方法，确保「重试失败项」不会被上一轮的停止
+        请求误杀。
+        """
+        self._stop_requested = False
+
+    def _run_inner(
         self,
         project: Project,
         config: Config,
@@ -88,9 +132,8 @@ class TranslationEngine:
         segmenter = Segmenter(
             max_lines=max(1, int(getattr(config, "block_lines", 30))),
             context_lines=max(0, int(getattr(config, "context_lines", 3))))
-        # 注意：**不**在这里重置 _stop_requested（__init__ 已初始化为 False）。
-        # 若在 run() 前就调了 stop()（用户在「开始」到 worker 真正启动之间的
-        # 窗口点停止），重置会把该请求吃掉，导致整轮翻译照跑（问题清单 N4/A7）。
+        # 注意：**不**在这里重置 _stop_requested（见 run()：复位由 run() 的
+        # finally 负责；入口复位会吞掉 run() 之前设置的 stop 请求，N4/A7）。
         round_no = 0
         history: list[str] = []
         prev_key: Optional[str] = None
