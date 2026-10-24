@@ -269,3 +269,67 @@ def test_gui_full_audit_button_populates_results(qt_app, monkeypatch) -> None:
             app._timer.stop()
         if app._window is not None:
             app._window.close()
+
+
+# ---------------------------------------------------------------------------
+# 14. 重译按钮：命中段落全部置 FAILED 并落盘，其余不变
+# ---------------------------------------------------------------------------
+def test_retranslate_marks_failed(tmp_path, qt_app, monkeypatch) -> None:
+    monkeypatch.setattr(QApplication, "exec", lambda self: 0, raising=False)
+    proj = _make_project([
+        _seg(1, "He {size=40}smiled{/size}", "他笑了"),     # 命中：标签
+        _seg(2, "Ian left", "他离开了"),                     # 命中：术语
+        _seg(3, "All good here", "这里一切正常"),            # 未命中，保持
+    ])
+    profile = TermProfile(terms={"Ian": "伊恩"})
+    app = PytranApp(proj, work_dir=str(tmp_path))
+    app._log = lambda *a, **k: None
+    app.run()
+    try:
+        app._audit_results = app.state.full_audit(profile)
+        assert {r["uid"] for r in app._audit_results} == {1, 2}
+        dlg = app._build_audit_dialog(app._audit_results)
+        app._on_audit_retranslate(dlg)  # 点击「重译」
+        # uid1、uid2 置 FAILED；uid3 不变
+        by_uid = {s.uid: s for s in app.project.segments}
+        assert by_uid[1].status == SegmentStatus.FAILED
+        assert by_uid[2].status == SegmentStatus.FAILED
+        assert by_uid[3].status == SegmentStatus.TRANSLATED
+        # 已落盘（project.json 写入临时目录）
+        assert (tmp_path / "project.json").exists()
+        # 面板已闭合、结果清空
+        assert app._audit_dialog is None
+        assert app._audit_results == []
+    finally:
+        if app._timer is not None:
+            app._timer.stop()
+        if app._window is not None:
+            app._window.close()
+
+
+# ---------------------------------------------------------------------------
+# 15. 重译幂等：已是 FAILED 的命中段不覆盖其 error 原因
+# ---------------------------------------------------------------------------
+def test_retranslate_idempotent_on_failed(tmp_path, qt_app, monkeypatch) -> None:
+    monkeypatch.setattr(QApplication, "exec", lambda self: 0, raising=False)
+    flagged = _seg(1, "He {size=40}smiled{/size}", "他笑了")
+    flagged.status = SegmentStatus.FAILED
+    flagged.error = "上次翻译失败：超时"
+    proj = _make_project([flagged])
+    app = PytranApp(proj, work_dir=str(tmp_path))
+    app._log = lambda *a, **k: None
+    app.run()
+    try:
+        app._audit_results = app.state.full_audit(TermProfile())
+        assert app._audit_results and app._audit_results[0]["uid"] == 1
+        dlg = app._build_audit_dialog(app._audit_results)
+        app._on_audit_retranslate(dlg)
+        seg = app.project.segments[0]
+        # 仍为 FAILED，但原有失败原因（非“全面审校发现问题”）被保留
+        assert seg.status == SegmentStatus.FAILED
+        assert seg.error == "上次翻译失败：超时"
+    finally:
+        if app._timer is not None:
+            app._timer.stop()
+        if app._window is not None:
+            app._window.close()

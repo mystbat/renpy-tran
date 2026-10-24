@@ -15,6 +15,7 @@ A ``Character`` 定义 / D ``Segment.role`` / B ``old`` 短串 / C AI 识别。
 """
 from __future__ import annotations
 
+import csv
 import re
 from collections import Counter
 from pathlib import Path
@@ -29,6 +30,11 @@ __all__ = [
     "rows_to_terms",
     "detect_duplicate_originals",
     "apply_terms",
+    "glossary_path",
+    "write_glossary_csv",
+    "write_glossary_csv_rows",
+    "read_glossary_csv",
+    "merge_glossary_into_profile",
     "Candidate",
     "SOURCE_CHARACTER",
     "SOURCE_ROLE",
@@ -539,4 +545,93 @@ def apply_terms(
         if not profile.prompt_overrides:
             profile.prompt_overrides = {}
         profile.prompt_overrides["system_append"] = system_append
+    return profile
+
+
+# --------------------------------------------------------------------------- #
+# 术语表 CSV（用户易编辑格式，W5b-续）
+#
+# 术语表以 ``glossary.csv``（表头 原文,译名）落盘于工程目录，与 ``profile.json``
+# 并存。用户或外部 AI 工具可手动编辑该 CSV；应用负责导出/导入/合并。AI 读工程
+# 不在本软件内（§用户决策）。CSV 用标准库 ``csv`` 写入，自动转义
+# 逗号/引号/换行，中文用 utf-8-sig 以便 Excel 打开。
+# --------------------------------------------------------------------------- #
+
+_GLOSSARY_FILENAME = "glossary.csv"
+_GLOSSARY_HEADER = ("原文", "译名")
+
+
+def glossary_path(work_dir: str | Path) -> Path:
+    """术语表 CSV 的默认路径：``<work_dir>/glossary.csv``。"""
+    return Path(work_dir) / _GLOSSARY_FILENAME
+
+
+def write_glossary_csv_rows(rows: Sequence[tuple[str, str]], work_dir: str | Path) -> Path:
+    """把 (原文, 译名) 行写出为 ``glossary.csv``，返回路径（导出按钮用）。
+
+    - 按原文排序，便于人工/AI 审阅；
+    - 空原文行忽略；
+    - 标准库 ``csv`` 自动转义逗号/引号/换行；
+    - 写 utf-8-sig（带 BOM）以兼容 Excel 打开中文。
+    """
+    path = glossary_path(work_dir)
+    ordered = sorted(
+        ((str(o), str(t)) for o, t in rows if str(o).strip()),
+        key=lambda kv: kv[0],
+    )
+    with path.open("w", encoding="utf-8-sig", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(_GLOSSARY_HEADER)
+        for original, translation in ordered:
+            writer.writerow([original, translation])
+    return path
+
+
+def write_glossary_csv(profile: TermProfile, work_dir: str | Path) -> Path:
+    """由 ``TermProfile.terms`` 生成 ``glossary.csv``（导出按钮用）。"""
+    return write_glossary_csv_rows(profile_to_rows(profile), work_dir)
+
+
+def read_glossary_csv(work_dir: str | Path) -> list[tuple[str, str]]:
+    """读取 ``glossary.csv`` → 按原文排序的 (原文, 译名) 行。
+
+    - 文件缺失 → ``[]``（不抛错，便于首次使用）；
+    - 跳过表头与空原文行；
+    - 每行只取前 2 列，多列时忽略余下列。
+    """
+    path = glossary_path(work_dir)
+    if not path.exists():
+        return []
+    rows: list[tuple[str, str]] = []
+    with path.open("r", encoding="utf-8-sig", newline="") as fh:
+        reader = csv.reader(fh)
+        for i, raw in enumerate(reader):
+            if i == 0 and raw and raw[:1] == list(_GLOSSARY_HEADER[:1]):
+                # 表头行（首列为「原文」）跳过
+                continue
+            if not raw:
+                continue
+            original = (raw[0] or "").strip()
+            if not original:
+                continue
+            translation = raw[1] if len(raw) > 1 else ""
+            rows.append((original, translation))
+    return sorted(rows, key=lambda kv: kv[0])
+
+
+def merge_glossary_into_profile(
+    profile: TermProfile, work_dir: str | Path
+) -> TermProfile:
+    """把 ``glossary.csv`` 合并进 ``profile.terms``（导入/打开位置后刷新）。
+
+    规则：CSV 同名原文**覆盖**既有译名；CSV 新条目追加；profile 中未出现在
+    CSV 的条目**保留**。返回同一 ``profile`` 实例（原地修改）。
+    """
+    csv_rows = read_glossary_csv(work_dir)
+    if not csv_rows:
+        return profile
+    terms = dict(profile.terms or {})
+    for original, translation in csv_rows:
+        terms[original] = translation
+    profile.terms = terms
     return profile

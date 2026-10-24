@@ -1073,7 +1073,8 @@ class PytranApp:
         from PyQt6.QtCore import Qt
         from PyQt6.QtWidgets import (
             QDialog, QTableWidget, QTableWidgetItem, QHeaderView,
-            QAbstractItemView, QLabel, QVBoxLayout,
+            QAbstractItemView, QLabel, QVBoxLayout, QHBoxLayout,
+            QPushButton,
         )
 
         dlg = QDialog(self._window)
@@ -1109,12 +1110,56 @@ class PytranApp:
                 table.setItem(row, 1, QTableWidgetItem(f"{r['file']}:{r['uid']}"))
                 table.setItem(row, 2, QTableWidgetItem(f"[{cat}] {detail}"))
 
+        layout.addWidget(table)
+
         # 双击定位：读出该行的 uid → 切到审校页对应段
         table.cellDoubleClicked.connect(
             lambda row, _col: self._locate_audit_uid(
                 table.item(row, 0).data(Qt.ItemDataRole.UserRole)))
-        layout.addWidget(table)
+
+        # 底部操作条：把命中的所有段落标记为「失败」，交回翻译/重译队列
+        # （W5h 后续：审校结果可一键处理，而非仅只读展示）。
+        bar = QHBoxLayout()
+        bar.addStretch(1)
+        btn_retranslate = QPushButton("重译")
+        btn_retranslate.setToolTip(
+            "把所有被审校标记问题的段落状态设为「失败」，\n"
+            "它们会回到「开始自动翻译 / 失败重译」队列中重新翻译。")
+        btn_retranslate.clicked.connect(
+            lambda _: self._on_audit_retranslate(dlg))
+        bar.addWidget(btn_retranslate)
+        layout.addLayout(bar)
         return dlg
+
+    def _on_audit_retranslate(self, dlg) -> None:
+        """全面审校结果面板「重译」：把命中的段落全部置为 FAILED 并落盘。
+
+        只读检查后交回用户处理——这些段落会重新进入翻译/失败重译队列。
+        已在 FAILED 的段保持 FAILED（幂等，不改其原有 error 原因）。
+        """
+        if not self._audit_results:
+            return
+        uids = {r["uid"] for r in self._audit_results}
+        seg_by_uid = {s.uid: s for s in self.project.segments}
+        n_done = 0
+        for uid in uids:
+            seg = seg_by_uid.get(uid)
+            if seg is None:
+                continue
+            if seg.status == SegmentStatus.FAILED:
+                continue  # 已是 FAILED，无需重复置位（error 原因保留）
+            seg.status = SegmentStatus.FAILED
+            seg.error = "全面审校发现问题"
+            n_done += 1
+        if n_done:
+            JsonProjectStore().save(self.project, self.work_dir)
+            self._refresh_progress()
+            self._log(f"全面审校：已将 {n_done} 个问题段落标记为「失败」，可重新翻译。")
+        else:
+            self._log("全面审校：命中的段落已均为「失败」状态，无需重复标记。")
+        # 闭合面板并清空结果（finished 信号与显式调用均指向 _clear_audit，幂等）
+        self._clear_audit()
+        dlg.accept()
 
     @staticmethod
     def _status_to_filter_key(status_name: str) -> str:
@@ -1301,6 +1346,71 @@ class PytranApp:
         btn_add.clicked.connect(add_row)
         btn_del.clicked.connect(del_rows)
         btn_extract.clicked.connect(extract_candidates)
+
+        # W5b-续：术语表用户易编辑格式（CSV + 打开位置）
+        from pytran.terms import (
+            glossary_path,
+            read_glossary_csv,
+            write_glossary_csv_rows,
+        )
+        import os as _os
+
+        def _table_rows() -> list[tuple[str, str]]:
+            result: list[tuple[str, str]] = []
+            for r in range(table.rowCount()):
+                it0, it1 = table.item(r, 0), table.item(r, 1)
+                o = (it0.text().strip() if it0 else "")
+                if not o:
+                    continue
+                result.append((o, it1.text().strip() if it1 else ""))
+            return result
+
+        def _reload_table(rows: list[tuple[str, str]]) -> None:
+            table.setRowCount(0)
+            for o, t in rows:
+                row = table.rowCount()
+                table.insertRow(row)
+                table.setItem(row, 0, QTableWidgetItem(o))
+                table.setItem(row, 1, QTableWidgetItem(t or ""))
+
+        def export_csv():
+            path = write_glossary_csv_rows(_table_rows(), self.work_dir)
+            QMessageBox.information(dlg, "术语表", f"已导出到：\n{path}")
+
+        def import_csv():
+            new_rows = read_glossary_csv(self.work_dir)
+            if not new_rows:
+                QMessageBox.information(
+                    dlg, "术语表", "未找到 glossary.csv（先导出或保存一次）。")
+                return
+            _reload_table(new_rows)
+            QMessageBox.information(
+                dlg, "术语表",
+                f"已从 glossary.csv 导入 {len(new_rows)} 条"
+                f"（保存后写入 profile）。")
+
+        def open_location():
+            # 打开术语表所在目录并选中文件（系统调用，用户实测）
+            path = glossary_path(self.work_dir)  # pragma: no cover
+            target = path if path.exists() else path.parent  # pragma: no cover
+            try:  # pragma: no cover
+                _os.startfile(str(target), "explore")
+            except OSError:  # pragma: no cover
+                QMessageBox.information(dlg, "术语表", f"路径：\n{target}")
+
+        csv_btns = QHBoxLayout()
+        btn_export = QPushButton("导出 CSV")
+        btn_import = QPushButton("导入 CSV")
+        btn_open = QPushButton("打开位置")
+        btn_export.clicked.connect(export_csv)
+        btn_import.clicked.connect(import_csv)
+        btn_open.clicked.connect(open_location)
+        csv_btns.addWidget(btn_export)
+        csv_btns.addWidget(btn_import)
+        csv_btns.addWidget(btn_open)
+        csv_btns.addStretch(1)
+        v.addLayout(csv_btns)
+
         tabs.addTab(page_terms, "术语表")
 
         # ---- Tab 3: 翻译规则 ----
@@ -1355,11 +1465,21 @@ class PytranApp:
             append = rules_edit.toPlainText().strip()
             self._apply_rules(append)
 
+            # W5b-续：保存时同步导出用户易编辑的术语表 CSV（glossary.csv）
+            from pytran.terms import write_glossary_csv_rows
+            try:
+                csv_path = write_glossary_csv_rows(rows, self.work_dir)
+            except OSError as exc:
+                csv_path = None
+                logging.getLogger(__name__).warning("导出 glossary.csv 失败: %s", exc)
+
             # B6：保存结果汇总（W5b §3.2「弹窗汇总保存结果」）
             parts = [
                 "已保存到 config.ini / profile.json。",
                 f"术语 {len(terms_map)} 条，免翻短语 {len(exempt_add)} 条。",
             ]
+            if csv_path is not None:
+                parts.append(f"术语表 CSV：{csv_path}")
             if dups:
                 parts.append(f"重复原文已合并（后值覆盖）：{'、'.join(dups[:5])}"
                              + ("…" if len(dups) > 5 else ""))
