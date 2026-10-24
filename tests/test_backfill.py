@@ -48,11 +48,27 @@ def test_normalize_feature_strips_and_unifies_quotes_and_colons():
 
 
 # ----------------------------- §6.2 uid 精确 -----------------------------
+# DECISION(BUGFIX(merge-uid-collision))：uid 是「单次导入内的段序号」
+# （build_project 每次从 1 重编），跨导入毫无语义。合并导入若按 uid 匹配，
+# 旧 uid=5 的译文会写到新 uid=5（完全不同的另一段）——用户实测 2026-10-24
+# 因此写回后 15 个文件译文全部张冠李戴。uid 级匹配默认关闭，仅在
+# 同会话内 CSV 回填（导入后未重编 uid）时由调用方显式开启。
 
-def test_match_by_uid_exact():
+
+def test_uid_matching_disabled_by_default():
+    """默认不按 uid 匹配：唯一相同点是 uid，其余全不同 → 不匹配。"""
     segs = [_seg(10, "say", "a.rpy:5", "hello")]
     rows = [_row(uid=10, feature="other", locator="zzz", source="x", target="你好")]
     out = match_translations(segs, rows)
+    assert out.matches == []
+    assert len(out.unmatched) == 1
+
+
+def test_uid_matching_opt_in_for_same_session():
+    """显式 use_uid_matching=True 时 uid 级匹配恢复（同会话 CSV 回填用）。"""
+    segs = [_seg(10, "say", "a.rpy:5", "hello")]
+    rows = [_row(uid=10, feature="other", locator="zzz", source="x", target="你好")]
+    out = match_translations(segs, rows, use_uid_matching=True)
     assert len(out.matches) == 1
     m = out.matches[0]
     assert m.method == "uid"
@@ -60,16 +76,14 @@ def test_match_by_uid_exact():
     assert out.unmatched == []
 
 
-def test_match_uid_takes_precedence_over_feature():
-    # 同一 feature 匹配到另一 uid，但 uid 命中优先
-    segs = [
-        _seg(10, "say", "a.rpy:5", "hello"),
-        _seg(20, "say", "a.rpy:9", "world"),
-    ]
-    rows = [_row(uid=10, feature="say", locator="a.rpy:9", source="world", target="X")]
+def test_uid_collision_does_not_cross_match():
+    """uid 相同但 feature/locator/source 全不同 → 绝不错配（回归守卫）。"""
+    segs = [_seg(5, "translate chinese other:", "b.rpy:5", "Totally different")]
+    rows = [_row(uid=5, feature="translate chinese target:",
+                 locator="# game/a.rpy:5", source="Original English",
+                 target="这是完全另一句的译文")]
     out = match_translations(segs, rows)
-    assert out.matches[0].method == "uid"
-    assert out.matches[0].segment.uid == 10
+    assert out.matches == [], "uid 撞车不应产生匹配"
 
 
 # ----------------------------- §6.2 特征码归一化 -----------------------------
@@ -78,7 +92,7 @@ def test_match_by_normalized_feature():
     # §6.2：'' 与 "" 都归一化为 "，因此 say''old 与 say"old 等值
     segs = [_seg(11, "say''old", "a.rpy:5", "hello")]
     rows = [_row(feature='say"old', locator="elsewhere", source="hello", target="你好")]
-    out = match_translations(segs, rows)
+    out = match_translations(segs, rows, use_uid_matching=True)
     assert len(out.matches) == 1
     assert out.matches[0].method == "feature"
     assert out.matches[0].segment.uid == 11
@@ -92,7 +106,7 @@ def test_match_by_similarity_same_locator():
         feature="x", locator="a.rpy:5",
         source="the quick brown fox jumps over", target="快速的棕色狐狸跳过",
     )]
-    out = match_translations(segs, rows)
+    out = match_translations(segs, rows, use_uid_matching=True)
     assert len(out.matches) == 1
     m = out.matches[0]
     assert m.method == "similarity"
@@ -102,7 +116,7 @@ def test_match_by_similarity_same_locator():
 def test_no_similarity_across_different_locator():
     segs = [_seg(13, "say", "a.rpy:5", "the quick brown fox jumps over")]
     rows = [_row(feature="x", locator="a.rpy:99", source="the quick brown fox jumps over", target="Y")]
-    out = match_translations(segs, rows)
+    out = match_translations(segs, rows, use_uid_matching=True)
     assert out.matches == []
     assert len(out.unmatched) == 1
 
@@ -110,7 +124,7 @@ def test_no_similarity_across_different_locator():
 def test_similarity_below_threshold_is_unmatched():
     segs = [_seg(14, "say", "a.rpy:5", "completely different sentence here")]
     rows = [_row(feature="x", locator="a.rpy:5", source="totally unrelated text now", target="Z")]
-    out = match_translations(segs, rows)
+    out = match_translations(segs, rows, use_uid_matching=True)
     assert out.unmatched == [rows[0]]
 
 
@@ -122,7 +136,7 @@ def test_all_unmatched_when_nothing_fits():
         _row(uid=999, feature="nope", locator="a.rpy:1", source="zzz", target="1"),
         _row(uid=888, feature="nada", locator="b.rpy:2", source="qqq", target="2"),
     ]
-    out = match_translations(segs, rows)
+    out = match_translations(segs, rows, use_uid_matching=True)
     assert out.matches == []
     assert len(out.unmatched) == 2
 
@@ -133,7 +147,7 @@ def test_no_double_consume_same_segment():
         _row(uid=16, feature="say", locator="a.rpy:5", source="hello", target="A"),
         _row(uid=None, feature="say", locator="a.rpy:5", source="hello", target="B"),
     ]
-    out = match_translations(segs, rows)
+    out = match_translations(segs, rows, use_uid_matching=True)
     assert len(out.matches) == 1
     assert out.matches[0].method == "uid"
     assert len(out.unmatched) == 1

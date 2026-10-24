@@ -91,16 +91,25 @@ def match_translations(
     *,
     similarity_threshold: float = SIMILARITY_THRESHOLD,
     on_warning: Optional[Callable[[str, TranslationRow, Segment], None]] = None,
+    use_uid_matching: bool = False,
 ) -> MatchOutcome:
     """§6.2 兜底链：为每条外来译文匹配一个 Segment。
 
     匹配优先级（命中即停）：
-    1. ``uid`` 精确（主键）；
+    1. ``uid`` 精确（主键）——**默认关闭**，见下方 DECISION；
     2. 特征码归一化后等值；
     3. 定位符相同且 ``SequenceMatcher`` 相似度 ≥ 阈值（命中打 warning，§6.2 末级兜底）；
     4. 三级均失败 → 计入 ``unmatched``。
 
     一个 Segment 至多被一条译文占用（``consumed`` 记录已匹配 uid），避免重复写回。
+
+    DECISION(BUGFIX(merge-uid-collision))：``use_uid_matching`` 默认 False。
+    uid 是「单次导入内的段序号」（build_project 每次从 1 重编），**跨导入
+    毫无语义**。合并导入（ui._merge_import）若按 uid 精确匹配，旧工程
+    uid=5 的译文会写到新工程 uid=5（完全不同的另一段）上——用户实测
+    2026-10-24：合并导回后写回，15 个文件译文全部张冠李戴（common.rpy
+    第 0 对 new 变成别处译文）。跨导入对齐只能用特征码（label）与
+    相似度+定位符；同一次会话内的 CSV 回填（import_csv）可显式开启。
     """
     segs = list(segments)
     row_list = list(rows)
@@ -131,8 +140,9 @@ def match_translations(
         seg: Optional[Segment] = None
         method: Optional[str] = None
 
-        # 1) uid 精确（主键）
-        if row.uid is not None and row.uid in uid_index:
+        # 1) uid 精确（主键）——默认关闭：跨导入 uid 无语义（见 DECISION）
+        if (use_uid_matching and row.uid is not None
+                and row.uid in uid_index):
             seg = take(uid_index[row.uid])
             if seg is not None:
                 method = "uid"

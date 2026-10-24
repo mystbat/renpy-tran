@@ -280,6 +280,17 @@ class PytranApp:
         if not self._ensure_engine_ready():
             return
 
+        # BUGFIX(stop-flag-sticky) 2026-10-24：启动新一轮前清掉上一轮遗留的
+        # 停止标志。用户实测：超时失败后点「重试失败项」，日志立刻
+        # 「重试 206 个失败项…… / 翻译已被用户停止」，一行都没翻。
+        # 原因：engine 实例被复用（见 _ensure_engine_ready），而 stop() 置
+        # True 后若当时没有 run() 在跑，就没有任何出口去复位它。
+        # 放在 start() 之前而不是 run() 内部：run() 之前设置的 stop 请求
+        # 仍必须被尊重（N4/A7），只有「跨运行遗留」才该被清。
+        engine = getattr(self.deps, "engine", None)
+        if engine is not None and hasattr(engine, "reset_stop"):
+            engine.reset_stop()
+
         def worker() -> None:
             try:
                 deps = self.deps
@@ -517,11 +528,50 @@ class PytranApp:
         def _on_warn(kind, row, seg):  # noqa: ANN001
             self._log(f"合并导入：相似度兜底命中 uid={seg.uid}（locator={row.locator}），请人工复核")
 
-        outcome: MatchOutcome = match_translations(
-            new_project.segments, rows,
-            similarity_threshold=SIMILARITY_THRESHOLD, on_warning=_on_warn
-        )
-        keep_map = {m.segment.uid: m.row.target for m in outcome.matches}
+        # BUGFIX(merge-uid-collision)：uid 是「单次导入内的段序号」，跨导入
+        # 无语义——旧 uid=5 的译文会写到新 uid=5（完全不同的另一段）上，
+        # 写回后 15 个文件译文全部张冠李戴（用户实测 2026-10-24，已从事发
+        # 前的 bak/game 快照恢复）。故：
+        #   ① match_translations 禁用 uid 级匹配（use_uid_matching 默认 False）；
+        #   ② 先用 (文件, 原文) 精确对位——同一文件的同一句原文，译文直接沿用；
+        #   ③ 特征码/相似度兜底只在前两级未命中时生效。
+        by_file_src: dict[tuple[str, str], list] = {}
+        for seg in new_project.segments:
+            by_file_src.setdefault((seg.file, seg.source), []).append(seg)
+
+        exact_rows: list = []
+        fuzzy_rows: list = []
+        for row in rows:
+            # 找旧段来自哪个文件（row.locator 形如 "# game/<file>:<line>"）
+            old_file = None
+            for s in old_segs:
+                if (s.uid == row.uid and s.source == row.source
+                        and s.feature == row.feature):
+                    old_file = s.file
+                    break
+            if old_file and by_file_src.get((old_file, row.source)):
+                exact_rows.append((row, old_file))
+            else:
+                fuzzy_rows.append(row)
+
+        keep_map: dict[int, str] = {}
+        consumed_exact: set[int] = set()
+        for row, old_file in exact_rows:
+            for seg in by_file_src[(old_file, row.source)]:
+                if seg.uid not in consumed_exact:
+                    consumed_exact.add(seg.uid)
+                    keep_map[seg.uid] = row.target
+                    break
+
+        if fuzzy_rows:
+            outcome: MatchOutcome = match_translations(
+                [s for s in new_project.segments if s.uid not in consumed_exact],
+                fuzzy_rows,
+                similarity_threshold=SIMILARITY_THRESHOLD, on_warning=_on_warn
+            )
+            for m in outcome.matches:
+                keep_map[m.segment.uid] = m.row.target
+
         for seg in new_project.segments:
             if seg.uid in keep_map:
                 seg.target = keep_map[seg.uid]
@@ -532,13 +582,20 @@ class PytranApp:
         self.state.goto(2)
         JsonProjectStore().save(self.project, self.work_dir)
 
-        merged = len(outcome.matches)
-        legacy = len(outcome.unmatched)
+        merged = len(keep_map)
+        fuzzy_unmatched: list = []
+        if fuzzy_rows:
+            fuzzy_unmatched = [
+                r for r in fuzzy_rows
+                if r.source not in {s.source for s in new_project.segments
+                                    if s.uid in keep_map}
+            ]
+        legacy = len(fuzzy_unmatched)
         self._log(
             f"合并导入完成：新解析 {len(segs)} 段，回填已审校译文 {merged} 行、"
             f"{legacy} 行旧译文未匹配（见下方「遗留译文」）"
         )
-        for row in outcome.unmatched:
+        for row in fuzzy_unmatched:
             self._log(
                 f"遗留译文（未匹配，建议人工处理）：feature={row.feature!r} "
                 f"locator={row.locator!r} target={row.target!r}"
