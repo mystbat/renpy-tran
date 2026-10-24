@@ -14,8 +14,11 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
+import datetime
+import shutil
+
 from pytran.config import Config, TermProfile
-from pytran.models import Project
+from pytran.models import Project, SegmentStatus
 from pytran.project import JsonProjectStore
 from pytran.ui_state import REVIEW_FILTERS, UiState
 
@@ -428,6 +431,138 @@ class PytranApp:
             self._log(f"术语 AI 识别不可用（{exc}），仅用结构信号抽取",
                       level="warn")
             return None
+
+
+    def _confirm_import_mode(self) -> str:
+        """弹出三选项对话框，返回 "merge" / "reset" / "cancel"。
+
+        抽象为独立方法，便于测试时 monkeypatch（不真正弹窗）。
+        三个按钮均可取消：点 X / Esc 一律视为取消（noop）。
+        """
+        from PyQt6.QtWidgets import QMessageBox
+
+        translated = sum(1 for s in self.project.segments if s.status == SegmentStatus.TRANSLATED)
+        reviewed = sum(1 for s in self.project.segments if s.status == SegmentStatus.REVIEWED)
+        box = QMessageBox(self._window)
+        box.setWindowTitle("重新导入：当前已有译文")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(
+            f"当前工程：已译 {translated} 行 / 审校 {reviewed} 行。"
+            "重新导入将影响这些数据。"
+        )
+        box.setInformativeText("请选择如何处理已有的译文：")
+        btn_merge = box.addButton("合并导入（保留已审校译文）", QMessageBox.ButtonRole.AcceptRole)
+        btn_reset = box.addButton("清空重导（丢弃全部译文）", QMessageBox.ButtonRole.DestructiveRole)
+        btn_cancel = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(btn_merge)
+        box.setEscapeButton(btn_cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is btn_merge:
+            return "merge"
+        if clicked is btn_reset:
+            return "reset"
+        return "cancel"
+
+    def _backup_current_project(self) -> Optional[Path]:
+        """把当前 project.json 备份到 bak/project-<YYYYmmdd-HHMMSS>.json（只读快照）。
+
+        bak/ 已被 .gitignore 忽略；备份纯读源文件、不改动当前工程。
+        无 project.json 时返回 None（无可备份）。
+        """
+        src = Path(self.work_dir) / "project.json"
+        if not src.exists():
+            return None
+        bak_dir = Path(self.work_dir) / "bak"
+        bak_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        dst = bak_dir / f"project-{ts}.json"
+        shutil.copy2(src, dst)
+        return dst
+
+    def _merge_import(self, segs: list, gf: list, files: list) -> None:
+        """合并导入（任务书 §3）：复用 backfill 兜底链对齐旧/新。
+
+        * 旧工程里已译/已审校的行：按归一化特征码匹配到新的同名位置，
+          保留旧 target 并置为 REVIEWED；
+        * 新解析出的行（无匹配）：PENDING；
+        * 旧译文未能匹配到新结构（如旧 key 被删除）：记入「遗留译文」日志。
+        * term_profile 保持不变（沿用当前 profile.json，区别于「清空工程」）。
+        """
+        from pytran.project import build_project
+        from pytran.backfill import (
+            match_translations, TranslationRow, MatchOutcome,
+            SIMILARITY_THRESHOLD,
+        )
+
+        game_root = self.project.game_root
+        # 用新解析结果搭一个全 PENDING 的基线工程，再回填旧译文。
+        new_project = build_project(segs, files=gf, game_root=str(game_root or ""),
+                                    term_profile=self.project.term_profile)
+        old_segs = self.project.segments
+        rows = [
+            TranslationRow(
+                uid=s.uid,
+                feature=s.feature,
+                locator=s.locator,
+                source=s.source,
+                target=s.target,
+            )
+            for s in old_segs
+            if s.status in (SegmentStatus.TRANSLATED, SegmentStatus.REVIEWED)
+            and s.target
+            and s.target.strip()
+        ]
+
+        def _on_warn(kind, row, seg):  # noqa: ANN001
+            self._log(f"合并导入：相似度兜底命中 uid={seg.uid}（locator={row.locator}），请人工复核")
+
+        outcome: MatchOutcome = match_translations(
+            new_project.segments, rows,
+            similarity_threshold=SIMILARITY_THRESHOLD, on_warning=_on_warn
+        )
+        keep_map = {m.segment.uid: m.row.target for m in outcome.matches}
+        for seg in new_project.segments:
+            if seg.uid in keep_map:
+                seg.target = keep_map[seg.uid]
+                seg.status = SegmentStatus.REVIEWED
+
+        self.project = new_project
+        self.state = type(self.state)(self.project)
+        self.state.goto(2)
+        JsonProjectStore().save(self.project, self.work_dir)
+
+        merged = len(outcome.matches)
+        legacy = len(outcome.unmatched)
+        self._log(
+            f"合并导入完成：新解析 {len(segs)} 段，回填已审校译文 {merged} 行、"
+            f"{legacy} 行旧译文未匹配（见下方「遗留译文」）"
+        )
+        for row in outcome.unmatched:
+            self._log(
+                f"遗留译文（未匹配，建议人工处理）：feature={row.feature!r} "
+                f"locator={row.locator!r} target={row.target!r}"
+            )
+        self._log("已自动激活「翻译」阶段，合并后的未译行可继续翻译")
+        self._refresh_all()
+
+    def _reset_import(self, segs: list, gf: list, game_root: str) -> None:
+        """清空重导（任务书 §4）：先备份再全新导入，丢弃全部旧译文。"""
+        from pytran.project import build_project
+
+        translated = sum(1 for s in self.project.segments if s.status == SegmentStatus.TRANSLATED)
+        reviewed = sum(1 for s in self.project.segments if s.status == SegmentStatus.REVIEWED)
+        bak = self._backup_current_project()
+        if bak is not None:
+            self._log(f"已备份当前工程至 {bak.name}（清空重导前的安全快照）")
+        self._log(f"丢弃旧译文：translated {translated} 行 / reviewed {reviewed} 行")
+        self.project = build_project(segs, files=gf, game_root=str(game_root or ""))
+        self.state = type(self.state)(self.project)
+        self.state.goto(2)
+        JsonProjectStore().save(self.project, self.work_dir)
+        self._log(f"清空重导完成：从 {len(gf)} 个文件中解析出 {len(segs)} 段（skipped {self.project.stats.skipped}）→ project.json 已保存")
+        self._log("已自动激活「翻译」阶段，点击「开始自动翻译」即可启动")
+        self._refresh_all()
 
     def _load_profile(self) -> TermProfile:
         """加载术语表 profile。
@@ -1430,7 +1565,7 @@ class PytranApp:
             if self.project.segments or self.project.game_root != game_dir:
                 # 换了目录：旧工程数据（段列表/导入文件）全部作废，防止
                 # 旧游戏的可翻译行混进新游戏的审校列表。
-                from pytran.models import Project, ProjectStats
+                from pytran.models import Project, SegmentStatus, ProjectStats
                 old_root = self.project.game_root
                 self.project = Project(version=3, app="pytran",
                                        game_root=game_dir)
@@ -1468,7 +1603,7 @@ class PytranApp:
             
         if rpy:
             if self.project.segments:
-                from pytran.models import Project, ProjectStats
+                from pytran.models import Project, SegmentStatus, ProjectStats
                 self.project = Project(version=3, app="pytran")
                 self.state = type(self.state)(self.project)
                 self._log("已选择新文件：旧导入数据已清空")
@@ -1564,7 +1699,7 @@ class PytranApp:
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if ret != QMessageBox.StandardButton.Yes:
             return
-        from pytran.models import Project
+        from pytran.models import Project, SegmentStatus
         game_root = self.project.game_root
         self.project = Project(version=3, app="pytran", game_root=game_root)
         self.state = type(self.state)(self.project)
@@ -1642,6 +1777,37 @@ class PytranApp:
         if not segs:
             self._log("未从选中脚本中解析出有效文本段落。")
             return
+
+        # W5f：检查是否已有已译内容，有则弹三选项（合并/清空/取消）
+        has_translation = any(
+            s.status in (SegmentStatus.TRANSLATED, SegmentStatus.REVIEWED)
+            for s in self.project.segments
+        )
+        if has_translation:
+            mode = self._confirm_import_mode()
+            if mode == "merge":
+                from pytran.models import GameFile
+                from pytran.project import build_project
+                import hashlib
+                gf = []
+                for rel, rpy in files:
+                    gf.append(GameFile(name=rel, sha256=hashlib.sha256(rpy.read_bytes()).hexdigest(), game_relpath=rel))
+                self._merge_import(segs, gf, files)
+                self._refresh_all()
+                return
+            elif mode == "reset":
+                from pytran.models import GameFile
+                from pytran.project import build_project
+                import hashlib
+                gf = []
+                for rel, rpy in files:
+                    gf.append(GameFile(name=rel, sha256=hashlib.sha256(rpy.read_bytes()).hexdigest(), game_relpath=rel))
+                self._reset_import(segs, gf, str(game_root or ""))
+                self._refresh_all()
+                return
+            else:  # cancel
+                self._log("导入已取消")
+                return
 
         from pytran.models import GameFile
         from pytran.project import build_project
@@ -1759,7 +1925,7 @@ class PytranApp:
         cfg = self._current_config()
         uids = (set(only_uids) if only_uids is not None
                 else set(self._translatable_uids()))
-        from pytran.models import Project
+        from pytran.models import Project, SegmentStatus
         segs = [s for s in self.project.segments if s.uid in uids]
         try:
             return estimate_token_budget(Project(segments=segs), cfg)
