@@ -21,12 +21,17 @@ __all__ = [
     "TAG_RE", "VAR_RE", "ESC_RE", "WORD_RE",
     "Whitelist", "CheckResult",
     "strip_fences", "repair_quotes", "tags_ok", "tag_messages",
-    "compute_residual", "is_interjection_like", "check_ids", "Validator",
+    "compute_residual", "is_interjection_like", "check_ids",
+    "Validator",
 ]
 
 # --- §5.2 标签/插值/转义 ------------------------------------------------------
 TAG_RE = re.compile(r"\{[^}]*\}")        # {w} {b} {color=#fff} {/b} {w=0.5}
 VAR_RE = re.compile(r"\[[^\]]*\]")       # [player_name] [config.name!t]
+# Ren'Py 变量/插值标签「可译」修饰符 `!t`：只用于方括号写法（如 [e_name!t]），
+# 仅声明该标签内容可被翻译，不改变标签身份——[e_name] 与 [e_name!t] 是同一标签。
+# 花括号文本标签 {w} 等没有 `!t` 这种写法，故只对方括号做归一化。
+_T_MOD_RE = re.compile(r"!t(?=\])")
 ESC_RE = re.compile(r"\\.")              # \n \" \\
 
 # --- §5.1/§5.3 英文词判定 ----------------------------------------------------
@@ -128,23 +133,34 @@ def repair_quotes(text: str) -> str:
     return "".join(out)
 
 
+def _norm_tags(text: str) -> dict[re.Pattern, Counter]:
+    """按 TAG/VAR/ESC 三类分别计数；方括号变量标签比较前剥离 Ren'Py 的
+    `!t` 修饰符（[e_name!t] → [e_name]）。花括号标签 {w} 无 `!t` 写法，不归一化。"""
+    return {
+        TAG_RE: Counter(TAG_RE.findall(text or "")),
+        VAR_RE: Counter(_T_MOD_RE.sub("", t) for t in VAR_RE.findall(text or "")),
+        ESC_RE: Counter(ESC_RE.findall(text or "")),
+    }
+
+
 def tags_ok(src: str, dst: str) -> bool:
-    """V6：标签/插值/转义计数相等（允许换位置，§5.2）。"""
-    return (
-        Counter(TAG_RE.findall(src)) == Counter(TAG_RE.findall(dst))
-        and Counter(VAR_RE.findall(src)) == Counter(VAR_RE.findall(dst))
-        and Counter(ESC_RE.findall(src)) == Counter(ESC_RE.findall(dst))
-    )
+    """V6：标签/插值/转义计数相等（允许换位置，§5.2）。
+
+    Ren'Py 的 `!t` 翻译修饰符（如 [e_name] 与 [e_name!t]）视为同一标签，
+    比较前归一化掉。
+    """
+    s, d = _norm_tags(src), _norm_tags(dst)
+    return all(s[rx] == d[rx] for rx in (TAG_RE, VAR_RE, ESC_RE))
 
 
 def tag_messages(src: str, dst: str) -> list[str]:
     """V6 失败原因明细（§5 表：`tags: {w} 原文2处译文1处`）。"""
     msgs: list[str] = []
+    s, d = _norm_tags(src), _norm_tags(dst)
     for rx in (TAG_RE, VAR_RE, ESC_RE):
-        s, d = Counter(rx.findall(src or "")), Counter(rx.findall(dst or ""))
-        for token in sorted(set(s) | set(d)):
-            if s.get(token, 0) != d.get(token, 0):
-                msgs.append(f"tags: {token} 原文{s.get(token, 0)}处译文{d.get(token, 0)}处")
+        for token in sorted(set(s[rx]) | set(d[rx])):
+            if s[rx].get(token, 0) != d[rx].get(token, 0):
+                msgs.append(f"tags: {token} 原文{s[rx].get(token, 0)}处译文{d[rx].get(token, 0)}处")
     return msgs
 
 
@@ -160,6 +176,14 @@ def is_interjection_like(source: str) -> bool:
     if len(word) > 12:
         return False
     return bool(_REPEAT_RE.search(word)) or len(tail) >= 2 or (tail and tail[0] in "!?")
+
+
+# --- V7：已删除（用户要求 2026-10-24） --------------------------------------
+# 原「编号错配」启发式检测（译文重复 / 相邻长度倒挂 / 尖叫行交叉 + 单行
+# 长度兜底）全部移除。理由：三类指纹都只是**推断**，既有漏报也会误报——
+# 用户明确要求「能够 100% 判断错配的方法」，而批次内错配在信息上不可能
+# 被验证。改由「全面审校」面板的「AI 校对」按钮做全文逐行对照复核
+# （见 pytran/review.py），结论并入同一张表、共用「重译」。
 
 
 def compute_residual(

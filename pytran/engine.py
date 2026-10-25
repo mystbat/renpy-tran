@@ -22,7 +22,8 @@ from typing import Any, Callable, Optional
 
 from pytran.config import Config, TermProfile
 from pytran.interfaces import (
-    Detection, EventCallback, KeepDeclared, Provider, Uid, Validator,
+    Detection, EventCallback, KeepDeclared, Provider, Uid,
+    Validator,
 )
 from pytran.models import Project, Segment, SegmentStatus
 from pytran.project import JsonProjectStore

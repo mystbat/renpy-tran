@@ -291,6 +291,40 @@ class UnrenImpl(Unren):
 
     # -- 事务化写回 ---------------------------------------------------------
 
+    @staticmethod
+    def _warn_duplicate_locators(project: Project) -> None:
+        """同文件内 locator 重复检测（BUGFIX(regenerate-uid-index)）。
+
+        locator（`# game/<file>:<line>`）是 regenerate 的段定位键，正常
+        解析下每段唯一。重复 = 异常数据（手工编辑 project.json / 旧工具
+        残留），regenerate 时同键多段会互相覆盖 → 静默错位。
+        此处写回前扫描并打警告（列出前若干条），让用户在写回前发现。
+        """
+        from collections import Counter
+
+        per_file: dict = {}
+        for seg in project.segments:
+            per_file.setdefault(seg.file, []).append(seg.locator)
+        total_dups = 0
+        for fname, locs in per_file.items():
+            counts = Counter(locs)
+            dups = {loc: n for loc, n in counts.items() if n > 1}
+            if dups:
+                total_dups += len(dups)
+                sample = list(dups.items())[:3]
+                logger.warning(
+                    "写回前检测：%s 有 %d 个重复 locator（示例 %s）——"
+                    "同位置多段时 regenerate 按 uid 升序取第一段，"
+                    "建议检查 project.json 数据",
+                    fname, len(dups), sample,
+                )
+        if total_dups:
+            logger.warning(
+                "写回前 locator 重复合计 %d 处；段定位仍按 locator 主键，"
+                "uid 仅作冲突仲裁（详见 pytran.parser.regenerate）",
+                total_dups,
+            )
+
     def write_back(
         self, project: Project, work_dir: Path, journal: WriteJournal
     ) -> List[Path]:
@@ -308,6 +342,12 @@ class UnrenImpl(Unren):
         journal_id = journal.begin(f"write_back:{project.game_root}")
         parser = RenpyParser()
         written: List[Path] = []
+
+        # BUGFIX(regenerate-uid-index)：写回前检测同文件内 locator 重复——
+        # 正常解析不会产生（每个 translate 块一行），重复即异常数据。
+        # 打警告让用户在写回**前**发现（写回后是静默错位）。
+        self._warn_duplicate_locators(project)
+
         try:
             for gf in project.files:
                 rel = gf.game_relpath

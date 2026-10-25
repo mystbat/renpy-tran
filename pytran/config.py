@@ -2,6 +2,13 @@
 
 设计文档 §2.1（config.py 职责）、§8.5（renpy_sdk_dir）、§11（key 安全）、§14（fallback_model）。
 读取顺序：环境变量 TL_API_KEY > config.ini（§12）。
+
+变更记录：
+- 2026-10-24 经总控批准新增 ``[Review]`` 段 4 字段（``review_enabled`` /
+  ``review_model`` / ``review_window_lines`` / ``review_max_tokens``），用于
+  「翻译后全文复核」（AI 校对）阶段取代已删除的 V7 批次指纹检测
+  （见 docs/FEATURE-ai-review.md）。**仅新增，未改动任何既有字段语义**；
+  按 docs/W5c L127 惯例，config.py 加字段需总控确认，本条目即为该确认。
 """
 from __future__ import annotations
 
@@ -62,6 +69,12 @@ renpy_sdk_dir =
 
 [Terms]
 term_extract_use_ai = true
+
+[Review]
+review_enabled = true
+review_model = deepseek-ai/DeepSeek-R1-0528-Qwen3-8B
+review_window_lines = 2000
+review_max_tokens = 8192
 """
 
 _INI_SECTION_MAP: dict[tuple[str, str], str] = {
@@ -84,6 +97,10 @@ _INI_SECTION_MAP: dict[tuple[str, str], str] = {
     ("Game", "block_lines"): "block_lines",
     ("Game", "renpy_sdk_dir"): "renpy_sdk_dir",
     ("Terms", "term_extract_use_ai"): "term_extract_use_ai",
+    ("Review", "review_enabled"): "review_enabled",
+    ("Review", "review_model"): "review_model",
+    ("Review", "review_window_lines"): "review_window_lines",
+    ("Review", "review_max_tokens"): "review_max_tokens",
 }
 
 
@@ -112,6 +129,17 @@ class Config:
     term_extract_use_ai: bool = True     # W5c §2 信号源 C：AI 辅助识别术语
     profile_path: str = "profile.json"   # §7.2
     work_dir: str = "."                  # 工作目录（§2.2）
+
+    # -- 复核阶段（AI 校对，取代已删除的 V7 批次指纹检测） ---------------------
+    # 翻译完成后对全文做一次「原文-译文」对照复核，取代 V7 批次指纹猜测
+    # （见 docs/FEATURE-ai-review.md）。
+    # 窗口按行给：复核输入 ≈ N × (原文+译文)，与块大小无关，故窗口开大不额外
+    # 增加输入成本；真正限制窗口的是**输出**预算（逐行确认标记 + 推理链），
+    # 因此复核单独用 ``review_max_tokens``，不沿用翻译的 ``max_tokens``。
+    review_enabled: bool = True          # 复核阶段开关
+    review_model: str = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"  # 空 = 沿用主模型
+    review_window_lines: int = 2000      # 单次复核覆盖的行数
+    review_max_tokens: int = 8192        # 复核专用输出上限（含推理链余量）
 
     def effective_max_retry_rounds(self) -> int:
         """max_retry_rounds 被 round_budget_cap 钳制（§5.3：config 不得超硬上限）。"""
@@ -166,7 +194,7 @@ class Config:
     def _coerce_types(self) -> None:
         for int_attr in ("max_tokens", "max_workers", "max_retry_rounds", "round_budget_cap",
                          "keep_declare_min_batch", "keep_declare_min_total", "context_lines",
-                         "block_lines"):
+                         "block_lines", "review_window_lines", "review_max_tokens"):
             try:
                 setattr(self, int_attr, int(getattr(self, int_attr)))
             except (TypeError, ValueError):
@@ -180,6 +208,9 @@ class Config:
         # （configparser 的 getboolean 接受 1/yes/true/on；这里保持同等口径）。
         self.term_extract_use_ai = _coerce_bool(
             getattr(self, "term_extract_use_ai", True), default=True)
+        # 复核阶段开关（AI 校对）：默认开，与 ini 模板一致。
+        self.review_enabled = _coerce_bool(
+            getattr(self, "review_enabled", True), default=True)
 
 
 @dataclass

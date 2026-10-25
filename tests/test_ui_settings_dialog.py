@@ -164,10 +164,12 @@ def test_saved_numeric_fields_are_not_strings(gui: PytranApp) -> None:
     # 按当前值匹配。注意字段顺序（见 ui._open_settings 的 fields 清单）：
     #   [api_key, api_url, model, fallback_model, max_tokens, temperature,
     #    top_p, max_workers, timeout, max_retry_rounds, renpy_sdk_dir,
-    #    language, context_lines, block_lines]
+    #    language, context_lines, block_lines,
+    #    review_model, review_window_lines, review_max_tokens]
+    # review_enabled 是 QCheckBox，不在 QLineEdit 计数内。
     from PyQt6.QtWidgets import QLineEdit
     lines = dlg.findChildren(QLineEdit)
-    assert len(lines) == 14, f"设置页应有 14 个字段，实际 {len(lines)}"
+    assert len(lines) == 17, f"设置页应有 17 个文本字段，实际 {len(lines)}"
 
     # 按下标取，避免同值字段（max_retry_rounds 与 context_lines 默认都是 3）歧义
     timeout_edit = lines[8]     # 默认 "120.0"
@@ -279,7 +281,140 @@ def test_block_lines_field_present_in_settings(gui: PytranApp) -> None:
     dlg = _open_settings(gui)
     from PyQt6.QtWidgets import QLineEdit
     lines = dlg.findChildren(QLineEdit)
-    assert len(lines) == 14
+    assert len(lines) == 17
     # 第 14 个字段就是 block_lines，默认 30
     assert lines[13].text() == "30", \
         "设置页应有「切块大小 (block_lines)」字段（默认 30）"
+
+
+# --------------------------------------------------------------------------- #
+# 复核阶段字段（AI 校对，取代已删除的 V7 批次指纹检测）：窗口/模型必须可调
+# --------------------------------------------------------------------------- #
+def test_review_fields_present_and_defaulted(gui: PytranApp) -> None:
+    """复核窗口行数与复核模型必须能在设置页调，且默认值来自 config 模板。
+
+    用户要求：窗口大小与复核模型都要在设置界面可调，默认值取
+    ``DeepSeek-R1-0528-Qwen3-8B`` 的上下文所能允许的量。
+    """
+    dlg = _open_settings(gui)
+    from PyQt6.QtWidgets import QLineEdit
+    lines = dlg.findChildren(QLineEdit)
+    # 字段顺序见 _open_settings 的 fields 清单（末尾三个）
+    assert lines[14].text() == "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B", \
+        "复核模型字段应默认 DeepSeek-R1-0528-Qwen3-8B"
+    assert lines[15].text() == "2000", "复核窗口行数字段应默认 2000"
+    assert lines[16].text() == "8192", "复核输出上限字段应默认 8192"
+
+
+def test_review_window_and_model_are_saved_as_numeric(gui: PytranApp) -> None:
+    """复核窗口行数经保存后必须是 int（否则 chunk 循环会 TypeError）。"""
+    dlg = _open_settings(gui)
+    from PyQt6.QtWidgets import QLineEdit
+    lines = dlg.findChildren(QLineEdit)
+    lines[14].setText("other/review-model")
+    lines[15].setText("500")
+    lines[16].setText("4096")
+    _save_button(dlg).click()
+
+    cfg = _current_config(gui)
+    assert cfg.review_model == "other/review-model"
+    assert isinstance(cfg.review_window_lines, int), \
+        f"review_window_lines 应为 int，实际 {type(cfg.review_window_lines).__name__}"
+    assert isinstance(cfg.review_max_tokens, int)
+    assert cfg.review_window_lines == 500
+    assert cfg.review_max_tokens == 4096
+
+
+def test_review_enabled_checkbox_round_trips(gui: PytranApp) -> None:
+    """复核开关用 QCheckBox：取消勾选后必须落成 False（不是字符串 "False"）。"""
+    dlg = _open_settings(gui)
+    from PyQt6.QtWidgets import QCheckBox
+    boxes = [b for b in dlg.findChildren(QCheckBox)
+             if "复核" in b.text()]
+    assert boxes, "设置页应有复核开关勾选框"
+    cb = boxes[0]
+    assert cb.isChecked() is True, "复核开关默认应为开"
+
+    cb.setChecked(False)
+    _save_button(dlg).click()
+
+    cfg = _current_config(gui)
+    assert cfg.review_enabled is False, \
+        f"review_enabled 应为 False，实际 {cfg.review_enabled!r}"
+    # 落盘后重新读取也必须还是 False（ini 往返）
+    assert Config.load(gui.work_dir).review_enabled is False
+
+
+def test_review_window_empty_keeps_existing(gui: PytranApp) -> None:
+    """复核窗口留空 → 保留既有值，不被写成空串。"""
+    dlg = _open_settings(gui)
+    from PyQt6.QtWidgets import QLineEdit
+    lines = dlg.findChildren(QLineEdit)
+    lines[15].setText("")
+    _save_button(dlg).click()
+
+    cfg = _current_config(gui)
+    assert cfg.review_window_lines == 2000
+
+
+# --------------------------------------------------------------------------- #
+# 持久化落盘（2026-10-25 事故后续）：术语表 / 翻译规则 / 免翻短语都必须有
+# 用户可读镜像，且保存后立刻同步——不能只有 profile.json 一份。
+# --------------------------------------------------------------------------- #
+def _rules_edit(dlg: QDialog):
+    from PyQt6.QtWidgets import QPlainTextEdit
+    edit = dlg.findChild(QPlainTextEdit, "rules_edit")
+    assert edit is not None, "设置对话框应有 objectName=rules_edit 的翻译规则框"
+    return edit
+
+
+def test_save_writes_rules_mirror(gui: PytranApp) -> None:
+    """翻译规则保存后必须落一份 rules.txt（事故里规则是唯一无副本的资产）。"""
+    dlg = _open_settings(gui)
+    _rules_edit(dlg).setPlainText("保持人名不译，语气口语化。")
+    _save_button(dlg).click()
+
+    rules_file = gui.work_dir / "rules.txt"
+    assert rules_file.is_file(), "保存翻译规则后应生成 rules.txt"
+    assert rules_file.read_text(encoding="utf-8-sig").strip() == "保持人名不译，语气口语化。"
+
+    from pytran.profile_store import read_rules
+    assert read_rules(gui.work_dir) == "保持人名不译，语气口语化。"
+
+
+def test_save_writes_glossary_and_exempt_mirrors(gui: PytranApp) -> None:
+    """术语表与免翻短语保存后也必须有镜像（glossary.csv / exempt.txt）。"""
+    dlg = _open_settings(gui)
+    table = _terms_table(dlg)
+    table.setRowCount(1)
+    table.setItem(0, 0, QTableWidgetItem("Ian"))
+    table.setItem(0, 1, QTableWidgetItem("伊恩"))
+    _save_button(dlg).click()
+
+    assert (gui.work_dir / "glossary.csv").is_file()
+    csv_text = (gui.work_dir / "glossary.csv").read_text(encoding="utf-8-sig")
+    assert "Ian" in csv_text and "伊恩" in csv_text
+
+
+def test_rules_survive_profile_json_loss(gui: PytranApp) -> None:
+    """端到端：保存规则 → 删掉 profile.json → 重新加载，规则必须还在。"""
+    dlg = _open_settings(gui)
+    _rules_edit(dlg).setPlainText("专有名词一律音译。")
+    _save_button(dlg).click()
+
+    (gui.work_dir / "profile.json").unlink()
+    reloaded = gui._load_profile()
+    assert reloaded.prompt_overrides.get("system_append") == "专有名词一律音译。", \
+        "profile.json 丢失后翻译规则应从 rules.txt 恢复"
+
+
+def test_rules_export_button_writes_mirror_without_saving(gui: PytranApp) -> None:
+    """「导出到 rules.txt」按钮：不点保存也能立刻落盘（用户手工留底用）。"""
+    dlg = _open_settings(gui)
+    _rules_edit(dlg).setPlainText("临时草稿规则")
+    btn = next(b for b in dlg.findChildren(QPushButton)
+               if "rules.txt" in b.text() and "导出" in b.text())
+    btn.click()
+
+    from pytran.profile_store import read_rules
+    assert read_rules(gui.work_dir) == "临时草稿规则"

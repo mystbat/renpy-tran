@@ -37,12 +37,9 @@ class KeepDeclared:
     def __repr__(self) -> str:  # pragma: no cover
         return f"KeepDeclared(reason={self.reason!r})"
 
-    def __eq__(self, other: object) -> bool:
-        return isinstance(other, KeepDeclared) and other.reason == self.reason
-
 
 class Detection(str, enum.Enum):
-    """漏翻检测器四态判定（§5.3，ADR-0001）。纯函数输出。"""
+    """漏翻检测器判定（§5.3、ADR-0001）。纯函数输出。"""
 
     PASS = "pass"                        # 放行：残余为空，不入重译队列
     UNTRANSLATED = "untranslated"        # target == source 且剔除豁免后仍有实词

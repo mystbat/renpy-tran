@@ -1,4 +1,4 @@
-"""命令行壳（W5 交付物，设计 §8.3 / §13 / §15）。
+﻿"""命令行壳（W5 交付物，设计 §8.3 / §13 / §15）。
 
 子命令：
 * ``translate <文件...>`` —— 纯文件模式（M1）：解析 rpy → 翻译 → 写 output/。
@@ -75,6 +75,25 @@ def within_budget(estimate: int, budget_max: Optional[int]) -> bool:
     return estimate <= int(budget_max)
 
 
+def load_profile_with_mirrors(
+    work_dir: Path, filename: str = "profile.json"
+) -> TermProfile:
+    """CLI 侧加载 profile：与 GUI 同口径，用镜像补齐缺失字段。
+
+    BUGFIX(profile-persist, 2026-10-25)：CLI 三个入口原先直接
+    ``TermProfile.load()``，既不会从 ``glossary.csv`` 恢复术语，也不会
+    从 ``rules.txt`` 恢复翻译规则——一旦 ``profile.json`` 丢失，命令行
+    翻译出来的结果与 GUI 的完全不一致（术语全丢、规则全丢）。
+    统一走 ``pytran.profile_store.load_profile``，恢复提示写日志。
+    """
+    from pytran.profile_store import load_profile as _load
+
+    profile, notes = _load(work_dir, filename)
+    for note in notes:
+        logger.warning("%s", note)
+    return profile
+
+
 # --------------------------------------------------------------------------- #
 # 注入容器：把具体实现与 CLI 解耦
 # --------------------------------------------------------------------------- #
@@ -121,7 +140,7 @@ def cmd_translate(
         logger.error("未从输入文件解析出任何可翻译段落")
         return 1
     project = build_project(segments, files=files)
-    profile = TermProfile.load(work_dir / config.profile_path)
+    profile = load_profile_with_mirrors(work_dir, config.profile_path)
     engine.run(project, config, profile, only_uids=None)
     store.save(project, work_dir)
     written = exporter.export_rpy_forced(project, work_dir)
@@ -174,7 +193,7 @@ def cmd_game(
         logger.error("游戏目录中未解析出可翻译段落")
         return 1
     project = build_project(segments, files=files, game_root=str(game_root))
-    profile = TermProfile.load(work_dir / deps.config.profile_path)
+    profile = load_profile_with_mirrors(work_dir, deps.config.profile_path)
     deps.store.save(project, work_dir)
 
     # §15.3 成本闸：启动前拒绝超预算
@@ -297,7 +316,7 @@ def cmd_import_csv(csv_path: Path, *, work_dir: Path) -> int:
     if not project.segments:
         logger.error("import-csv：工程为空（未找到 %s）", work_dir / "project.json")
         return 1
-    profile = TermProfile.load(work_dir / deps.config.profile_path)
+    profile = load_profile_with_mirrors(work_dir, deps.config.profile_path)
     updated, unmatched = deps.exporter.import_csv(project, csv_path, profile)
     deps.store.save(project, work_dir)
     logger.info("import-csv 完成：更新 %d 行 / 未匹配 %d 行（已保存工程）",

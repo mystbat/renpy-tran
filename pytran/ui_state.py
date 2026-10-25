@@ -286,8 +286,16 @@ class UiState:
 
         注意：仅检查 *有译文* 的段；PENDING 且无 target 的段直接跳过
         （任务书 §5 用例 10）。
+
+        变更（2026-10-24，用户要求）：本方法**不再做任何拟声词/编号错配
+        检测**（原 V7：同译文多原文 / 相邻长度倒挂 / 尖叫行交叉 /
+        极端长度兜底）。理由：那些判据是启发式推断，既不能保证召回，
+        也会误报，用户明确不接受。错配改由「AI 校对」按钮（模型逐行
+        对照原文/译文）负责，见 ``ui.py::_build_audit_dialog``。
         """
-        from pytran.validators import Validator, TAG_RE, VAR_RE, ESC_RE
+        from pytran.validators import (
+            Validator, TAG_RE, VAR_RE, ESC_RE,
+        )
 
         try:
             terms = dict(profile.terms) if profile is not None else {}
@@ -351,6 +359,8 @@ class UiState:
                     "status": status_name,
                     "checks": checks,
                 })
+        # 变更（2026-10-24）：此处原有 V7 批次级三类指纹复检，已按用户要求
+        # 整段移除（启发式推断不可靠，改由「AI 校对」按钮负责）。
         return issues
 
 

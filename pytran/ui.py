@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import re
 import threading
@@ -51,7 +52,7 @@ _NUMERIC_ATTRS = (
     "max_tokens", "max_workers", "round_budget_cap", "max_retry_rounds",
     "context_lines", "block_lines", "keep_declare_min_batch",
     "keep_declare_min_total", "temperature", "top_p", "timeout",
-    "keep_declare_rate_limit",
+    "keep_declare_rate_limit", "review_window_lines", "review_max_tokens",
 )
 
 # R2：翻译页「最新译文」预览面板单次保留的最大条数。
@@ -102,6 +103,14 @@ class PytranApp:
         # W5h 全面审校：最近一次检查结果（内存），面板关闭即清空
         self._audit_results: list[dict] = []
         self._audit_dialog = None
+        # 面板内的表格/摘要/按钮引用（后台线程只发事件，主线程用这些引用更新）
+        self._audit_table = None
+        self._audit_summary = None
+        self._audit_review_btn = None
+        self._audit_review_label = None
+        # AI 校对运行态：是否在跑 + 停止标志（面板关闭时置位）
+        self._audit_reviewing = False
+        self._audit_review_stop = False
 
     def on_event(self, name: str, data: dict) -> None:
         self._events.put((name, data or {}))
@@ -203,6 +212,19 @@ class PytranApp:
                     pb.setValue(int(100.0 * data.get("done", 0) / total))
             if lbl is not None:
                 lbl.setText(data.get("text", ""))
+        elif name == "audit_review_progress":
+            # AI 校对：窗口级进度（后台线程只发事件，主线程更新标签）
+            self._set_audit_review_label(
+                f"AI 校对中……窗口 {data.get('done_windows', 0)}/"
+                f"{data.get('total_windows', 0)}，"
+                f"已确认 {data.get('confirmed', 0)}/{data.get('rows', 0)} 行。")
+        elif name == "audit_review_done":
+            # AI 校对终态：恢复按钮 + 把结论并入结果表
+            self._audit_reviewing = False
+            btn = self._audit_review_btn
+            if btn is not None:
+                btn.setEnabled(True)
+            self._apply_ai_review_result(data)
 
     def _set_translate_busy(self, busy: bool) -> None:
         """切换翻译进度条的 indeterminate 模式。
@@ -328,7 +350,7 @@ class PytranApp:
         return self._build_default_deps(allow_missing_provider=True).config
 
     def _apply_terms(self, terms_map: dict, exempt_add: list[str]) -> None:
-        """把编辑后的术语/豁免写回 profile.json（ADR-0004 无 Key 涉及）。"""
+        """把编辑后的术语/豁免写回 profile.json + 用户可读镜像。"""
         from pytran.terms import rows_to_terms
         profile = self._load_profile()
         # rows_to_terms(rows) -> (terms, auto_exempt)：空译名英文行自动进豁免
@@ -343,16 +365,35 @@ class PytranApp:
             if ex and ex not in final:
                 final.append(ex)
         profile.exempt_english = final
-        profile.save(self.work_dir / self.state.project.term_profile)
+        self._save_profile(profile)
 
     def _apply_rules(self, append: str) -> None:
-        """写入 prompt_overrides.system_append。"""
+        """写入 prompt_overrides.system_append（同时镜像到 rules.txt）。"""
         profile = self._load_profile()
+        overrides = dict(profile.prompt_overrides or {})
         if append:
-            profile.prompt_overrides["system_append"] = append
+            overrides["system_append"] = append
         else:
-            profile.prompt_overrides.pop("system_append", None)
-        profile.save(self.work_dir / self.state.project.term_profile)
+            overrides.pop("system_append", None)
+        profile.prompt_overrides = overrides
+        self._save_profile(profile)
+
+    def _save_profile(self, profile) -> None:
+        """原子保存 profile，并把术语/规则/免翻短语同步成用户可读镜像。
+
+        BUGFIX(profile-persist, 2026-10-25)：``profile.json`` 曾是术语表、
+        免翻短语、翻译规则的**唯一**副本。事故里它被删后 118 条术语靠
+        ``glossary.csv`` 复活，而手写的翻译规则没有镜像、永久丢失。
+        现在统一走 ``profile_store.save_profile``：先写 glossary.csv /
+        rules.txt / exempt.txt，再原子替换 profile.json 并留 .bak。
+        """
+        from pytran.profile_store import save_profile
+
+        filename = self.state.project.term_profile
+        try:
+            save_profile(profile, self.work_dir, filename)
+        except OSError as exc:  # noqa: BLE001 - 磁盘满/只读：告警但不崩界面
+            self._log(f"保存术语表失败：{exc}", level="warn")
 
     @staticmethod
     def _coerce_setting(attr: str, raw) -> object:
@@ -364,10 +405,16 @@ class PytranApp:
         （openai SDK 的 timeout / Segmenter 的 context_lines 等）。
         """
         raw = (str(raw) if raw is not None else "").strip()
+        # 布尔字段：勾选框给的是 bool，转成 str 后 "False" 是真值字符串，
+        # 直接 setattr 会让「关」变成「开」——必须先归一化。
+        if attr in ("review_enabled", "term_extract_use_ai"):
+            from pytran.config import _coerce_bool
+            return _coerce_bool(raw, default=False)
         # 整数字段：0/负数会崩线程池或让循环永动，钳到 >=1
         if attr in ("max_tokens", "max_workers", "round_budget_cap",
                     "max_retry_rounds", "context_lines", "block_lines",
-                    "keep_declare_min_batch", "keep_declare_min_total"):
+                    "keep_declare_min_batch", "keep_declare_min_total",
+                    "review_window_lines", "review_max_tokens"):
             if not raw:
                 return None
             try:
@@ -478,15 +525,40 @@ class PytranApp:
     def _backup_current_project(self) -> Optional[Path]:
         """把当前 project.json 备份到 bak/project-<YYYYmmdd-HHMMSS>.json（只读快照）。
 
+        同时把 profile.json（术语表 + 翻译规则）及其全部镜像
+        （glossary.csv / rules.txt / exempt.txt）备份到 bak/——这些数据
+        用户无法从游戏目录重建，必须留底。
         bak/ 已被 .gitignore 忽略；备份纯读源文件、不改动当前工程。
         无 project.json 时返回 None（无可备份）。
         """
-        src = Path(self.work_dir) / "project.json"
+        work = Path(self.work_dir)
+        src = work / "project.json"
+        from pytran.profile_store import (
+            EXEMPT_FILENAME, PROFILE_FILENAME, RULES_FILENAME, exempt_path,
+            profile_path, rules_path,
+        )
+        from pytran.terms import glossary_path
+
+        mirror_srcs = [
+            (profile_path(work), PROFILE_FILENAME, ".json"),
+            (glossary_path(work), "glossary", ".csv"),
+            (rules_path(work), RULES_FILENAME, ".txt"),
+            (exempt_path(work), EXEMPT_FILENAME, ".txt"),
+        ]
+        if not src.exists() and not any(p.exists() for p, _, _ in mirror_srcs):
+            return None  # 无内容可备份（不创建 bak/）
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        bak_dir = work / "bak"
+        bak_dir.mkdir(parents=True, exist_ok=True)
+        for path, stem, suffix in mirror_srcs:
+            if not path.exists():
+                continue
+            try:
+                shutil.copy2(path, bak_dir / f"{stem}-{ts}{suffix}")
+            except OSError as exc:  # noqa: BLE001 - 备份失败不阻断主流程
+                self._log(f"{path.name} 备份失败：{exc}", level="warn")
         if not src.exists():
             return None
-        bak_dir = Path(self.work_dir) / "bak"
-        bak_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         dst = bak_dir / f"project-{ts}.json"
         shutil.copy2(src, dst)
         return dst
@@ -593,18 +665,35 @@ class PytranApp:
         self._refresh_all()
 
     def _load_profile(self) -> TermProfile:
-        """加载术语表 profile。
+        """加载术语表 profile，并用用户可读镜像补齐缺失字段。
 
         B8（W5b §5 边界）：profile.json 损坏时按**空 profile** 处理并告警，
         不让 JSON 解析异常一路冒到 GUI 外层把整个界面带崩。
+
+        BUGFIX(glossary-fallback, 2026-10-25)：``glossary.csv`` 是术语表的
+        用户可读镜像，每次保存都会同步导出。若 ``profile.json`` 缺失/损坏
+        （历史事故里被直接 unlink 过），仅靠 profile.json 会让 118 条术语
+        凭空消失。这里在加载后把 CSV 合并回 profile（同名覆盖、新条目追加、
+        profile 独有条目保留），使术语表可以从 CSV 自动复活。
+
+        BUGFIX(profile-persist, 2026-10-25)：同一套镜像机制推广到
+        ``exempt.txt``（免翻短语）与 ``rules.txt``（翻译规则 system_append）
+        ——这两项此前**没有任何磁盘副本**，事故里规则被永久丢失。
+        恢复逻辑集中在 ``pytran.profile_store.load_profile``，GUI 只负责记日志。
         """
+        from pytran.profile_store import load_profile as _load
+
         path = self.work_dir / self.state.project.term_profile
-        try:
-            return TermProfile.load(path)
-        except Exception as exc:  # noqa: BLE001 - 损坏 JSON / 权限等
-            self._log(f"profile.json 读取失败（{path}）：{exc}"
-                      "——已按空术语表处理，保存后将覆盖原文件", level="warn")
-            return TermProfile()
+        profile, notes = _load(self.work_dir, self.state.project.term_profile)
+        if not path.exists() and not notes:
+            # 主文件缺失且镜像也为空：真正的「全新工程」，不必惊动用户。
+            logger.info("%s 不存在，按空术语表处理", path.name)
+        for note in notes:
+            # 「恢复成功」是正常路径（说明镜像起作用了），只提示不告警；
+            # 只有真正的读取/合并失败才升级为 warn。
+            level = "warn" if "失败" in note else "info"
+            self._log(note, level=level)
+        return profile
 
     @staticmethod
     def _icon_path() -> Path:
@@ -1089,14 +1178,29 @@ class PytranApp:
         dlg.exec()
 
     def _clear_audit(self) -> None:
+        # 面板关闭：先请后台复核停下（下一窗口边界退出），再清结果引用
+        self._audit_review_stop = True
+        self._audit_reviewing = False
         self._audit_results = []
         self._audit_dialog = None
+        self._audit_table = None
+        self._audit_summary = None
+        self._audit_review_btn = None
+        self._audit_review_label = None
 
     def _build_audit_dialog(self, results: list[dict]):
         """构造全面审校结果面板（不阻塞；由调用方决定是否 exec）。
 
         表格列：状态 / 文件:uid / 问题。每行对应一条 (段, 分类) 问题，
         行首 QTableWidgetItem 用 UserRole 携带 uid，供双击定位。
+
+        底部两个按钮（用户 2026-10-24 决策）：
+
+        * 「AI 校对」——把全文原文/译文逐行交给复核模型判 OK/NG，
+          结果以 ``[AI 校对]`` 分类**并入同一张表**（token 由用户主动花，
+          所以不做成自动的一步）；
+        * 「重译」——把表里命中的段落全部置 FAILED 交回重译队列，
+          规则问题与 AI 问题一起处理。
         """
         from PyQt6.QtCore import Qt
         from PyQt6.QtWidgets import (
@@ -1111,11 +1215,13 @@ class PytranApp:
         layout = QVBoxLayout(dlg)
 
         n_seg = len({r["uid"] for r in results})
-        n_issue = len(results)
+        # 按「处」计数：一个段可能同时命中标签与术语两条结论。
+        n_issue = sum(len(r.get("checks") or []) for r in results)
         summary = QLabel(
             f"共扫描 {len(self.project.segments)} 段，命中 {n_seg} 段 / {n_issue} 处问题。"
             if n_issue else
-            f"全面审校完成：共 {len(self.project.segments)} 段，未发现标签/转义/引号/英文/术语 异常。")
+            f"全面审校完成：共 {len(self.project.segments)} 段，"
+            "未发现标签/转义/引号/英文/术语 异常。")
         summary.setStyleSheet("color:#b03030; font-weight:bold;")
         layout.addWidget(summary)
 
@@ -1130,13 +1236,8 @@ class PytranApp:
             status_cn = REVIEW_FILTER_LABELS.get(
                 self._status_to_filter_key(r["status"]), r["status"])
             for cat, detail in r["checks"]:
-                row = table.rowCount()
-                table.insertRow(row)
-                it0 = QTableWidgetItem(status_cn)
-                it0.setData(Qt.ItemDataRole.UserRole, r["uid"])
-                table.setItem(row, 0, it0)
-                table.setItem(row, 1, QTableWidgetItem(f"{r['file']}:{r['uid']}"))
-                table.setItem(row, 2, QTableWidgetItem(f"[{cat}] {detail}"))
+                self._insert_audit_row(table, r["uid"], r["file"],
+                                       status_cn, cat, detail)
 
         layout.addWidget(table)
 
@@ -1145,9 +1246,29 @@ class PytranApp:
             lambda row, _col: self._locate_audit_uid(
                 table.item(row, 0).data(Qt.ItemDataRole.UserRole)))
 
-        # 底部操作条：把命中的所有段落标记为「失败」，交回翻译/重译队列
-        # （W5h 后续：审校结果可一键处理，而非仅只读展示）。
+        # AI 校对的进度/结论提示行（默认隐藏）
+        review_label = QLabel("")
+        review_label.setStyleSheet("color:#205080;")
+        review_label.hide()
+        layout.addWidget(review_label)
+
+        # 底部操作条
         bar = QHBoxLayout()
+        btn_review = QPushButton("AI 校对")
+        btn_review.setToolTip(
+            "把全文原文/译文逐行交给复核模型判 OK / NG（消耗 token）。\n"
+            "结论并入本表「AI 校对」分类，可双击定位、可一起重译。")
+        btn_review.clicked.connect(lambda _: self._on_ai_review())
+        # review_enabled=关 → 不提供入口（设置里可再打开），避免用户误以为
+        # 关掉了开关却仍能花钱调模型。
+        review_on = bool(getattr(self._current_config(),
+                                "review_enabled", True))
+        btn_review.setEnabled(review_on)
+        if not review_on:
+            btn_review.setToolTip(
+                "AI 校对已在「⚙ 设置」中关闭（复核开关）。\n"
+                "打开后即可把全文逐行交给复核模型判定。")
+        bar.addWidget(btn_review)
         bar.addStretch(1)
         btn_retranslate = QPushButton("重译")
         btn_retranslate.setToolTip(
@@ -1157,7 +1278,214 @@ class PytranApp:
             lambda _: self._on_audit_retranslate(dlg))
         bar.addWidget(btn_retranslate)
         layout.addLayout(bar)
+
+        # 后台复核线程通过事件队列回传，主线程用这些引用更新 UI
+        self._audit_table = table
+        self._audit_summary = summary
+        self._audit_review_btn = btn_review
+        self._audit_review_label = review_label
         return dlg
+
+    @staticmethod
+    def _insert_audit_row(table, uid, file, status_cn, cat, detail) -> None:
+        """往结果表追加一行（``uid`` 存在第 0 列 UserRole，供双击定位）。"""
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtWidgets import QTableWidgetItem
+
+        row = table.rowCount()
+        table.insertRow(row)
+        it0 = QTableWidgetItem(status_cn)
+        it0.setData(Qt.ItemDataRole.UserRole, uid)
+        table.setItem(row, 0, it0)
+        table.setItem(row, 1, QTableWidgetItem(f"{file}:{uid}"))
+        table.setItem(row, 2, QTableWidgetItem(f"[{cat}] {detail}"))
+
+    # ------------------------------------------------------------------
+    # AI 校对（全文复核；用户 2026-10-24：面板内单独按钮，结论并入同表）
+    # ------------------------------------------------------------------
+    def _on_ai_review(self) -> None:
+        """「AI 校对」按钮：后台跑全文复核，结论并入结果表。"""
+        if self._audit_reviewing:
+            self._log("AI 校对正在进行中，请等待本次完成。", level="warn")
+            return
+        if not bool(getattr(self._current_config(), "review_enabled", True)):
+            self._log("AI 校对已在「⚙ 设置」中关闭，请先打开复核开关。",
+                      level="warn")
+            return
+        if not self.project.segments:
+            self._log("AI 校对：当前工程没有任何段落。", level="warn")
+            return
+        from pytran import review as review_mod
+
+        rows = review_mod.build_rows(self.project.segments)
+        if not rows:
+            self._log("AI 校对：没有可校对的已翻译内容。", level="warn")
+            return
+        try:
+            provider = self._ensure_provider_ready()
+        except Exception as exc:  # noqa: BLE001 - 缺 Key/依赖缺失统一提示
+            self._log(f"AI 校对无法启动：{exc}", level="warn")
+            return
+        if provider is None:
+            return
+        if not hasattr(provider, "review_text"):
+            self._log("AI 校对无法启动：当前 provider 不支持复核通道。",
+                      level="warn")
+            return
+
+        cfg = self._current_config()
+        window = int(getattr(cfg, "review_window_lines", 2000) or 2000)
+        max_tokens = int(getattr(cfg, "review_max_tokens", 8192) or 8192)
+        workers = int(getattr(cfg, "max_workers", 3) or 3)
+
+        self._audit_reviewing = True
+        self._audit_review_stop = False
+        btn = self._audit_review_btn
+        if btn is not None:
+            btn.setEnabled(False)
+        self._set_audit_review_label(
+            f"AI 校对中……共 {len(rows)} 行，窗口 {window} 行/次。")
+        self._log(f"AI 校对开始：{len(rows)} 行，窗口 {window} 行/次。")
+
+        def call(prompt, system="", max_tokens=None, ids=None, line_count=0):
+            return provider.review_text(prompt, system,
+                                        max_tokens=max_tokens,
+                                        line_count=line_count)
+
+        runner = review_mod.ReviewRunner(
+            call,
+            window_lines=window,
+            max_tokens=max_tokens,
+            max_workers=workers,
+            on_progress=lambda d: self.on_event("audit_review_progress", d),
+            should_stop=lambda: self._audit_review_stop,
+        )
+
+        def worker() -> None:
+            try:
+                result = runner.run(rows)
+                payload = {
+                    "issues": [(i.uid, i.reason) for i in result.issues],
+                    "unconfirmed": list(result.unconfirmed),
+                    "errors": list(result.errors),
+                    "windows": result.windows,
+                    "rows": result.rows,
+                }
+            except Exception as exc:  # noqa: BLE001 - 后台线程不得抛到顶层
+                payload = {"issues": [], "unconfirmed": [],
+                           "errors": [f"{type(exc).__name__}: {exc}"],
+                           "windows": 0, "rows": len(rows)}
+            self.on_event("audit_review_done", payload)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _set_audit_review_label(self, text: str) -> None:
+        lbl = self._audit_review_label
+        if lbl is None:
+            return
+        lbl.setText(text)
+        lbl.setVisible(bool(text))
+
+    def _apply_ai_review_result(self, data: dict) -> None:
+        """把后台复核结论并入结果表（主线程执行）。"""
+        issues = data.get("issues") or []
+        unconfirmed = data.get("unconfirmed") or []
+        errors = data.get("errors") or []
+
+        by_uid = {r["uid"]: r for r in self._audit_results}
+        seg_by_uid = {s.uid: s for s in self.project.segments}
+
+        n_new = 0
+        for uid, reason in issues:
+            seg = seg_by_uid.get(uid)
+            if seg is None:
+                continue
+            if self._append_ai_check(by_uid, seg, "AI 校对", reason):
+                n_new += 1
+        for uid in unconfirmed:
+            seg = seg_by_uid.get(uid)
+            if seg is None:
+                continue
+            if self._append_ai_check(
+                    by_uid, seg, "AI 校对（未确认）",
+                    "模型未返回该行结论（可能输出被截断），建议重译"):
+                n_new += 1
+
+        # 摘要与提示
+        parts = [f"AI 校对完成：{data.get('rows', 0)} 行 / "
+                 f"{data.get('windows', 0)} 个窗口"]
+        parts.append(f"模型判 NG {len(issues)} 行")
+        if unconfirmed:
+            parts.append(f"未确认 {len(unconfirmed)} 行")
+        if errors:
+            parts.append(f"{len(errors)} 个窗口请求失败")
+        self._set_audit_review_label("；".join(parts) + "。")
+        if n_new:
+            self._log("AI 校对：" + "；".join(parts) + f"。已并入结果表 {n_new} 行。")
+        else:
+            self._log("AI 校对：" + "；".join(parts) + "。未发现新问题。")
+        for err in errors[:5]:
+            self._log(f"AI 校对：{err}", level="warn")
+        self._refresh_audit_summary()
+
+    def _append_ai_check(self, by_uid: dict, seg, cat: str, detail: str) -> bool:
+        """把一条 AI 结论并入 ``self._audit_results`` 并追加到表格；返回是否新增。
+
+        同一 (uid, 分类, 详情) 重复时不重复追加——用户可以反复点「AI 校对」，
+        每点一次就往表里堆一份相同的 NG 说明会很烦。
+        """
+        existing = by_uid.get(seg.uid)
+        if existing is None:
+            status = getattr(seg.status, "name", str(seg.status))
+            existing = {
+                "uid": seg.uid,
+                "file": seg.file,
+                "locator": seg.locator,
+                "source": seg.source,
+                "target": seg.target or "",
+                "status": status,
+                "checks": [],
+            }
+            self._audit_results.append(existing)
+            by_uid[seg.uid] = existing
+        if (cat, detail) in existing["checks"]:
+            return False
+        existing["checks"].append((cat, detail))
+        table = self._audit_table
+        if table is not None:
+            status_cn = REVIEW_FILTER_LABELS.get(
+                self._status_to_filter_key(existing["status"]),
+                existing["status"])
+            self._insert_audit_row(table, seg.uid, existing["file"],
+                                   status_cn, cat, detail)
+        return True
+
+    def _refresh_audit_summary(self) -> None:
+        lbl = self._audit_summary
+        if lbl is None:
+            return
+        n_seg = len({r["uid"] for r in self._audit_results})
+        # 按「处」计数：一个段可能同时命中标签与 AI 校对两条结论。
+        n_issue = sum(len(r.get("checks") or []) for r in self._audit_results)
+        lbl.setText(
+            f"共扫描 {len(self.project.segments)} 段，命中 {n_seg} 段 / "
+            f"{n_issue} 处问题。")
+
+    def _ensure_provider_ready(self):
+        """取 provider；未配置 Key 时给出可操作提示并返回 None。"""
+        if self.deps is not None and getattr(self.deps, "provider", None) is not None:
+            return self.deps.provider
+        try:
+            self.deps = self._build_default_deps()
+        except Exception as exc:  # noqa: BLE001 - 缺 SDK/Key 统一提示
+            self._log(f"无法初始化模型客户端：{exc}", level="warn")
+            self._log("请在「⚙ 设置」中填写 API Key 后重试", level="warn")
+            return None
+        provider = getattr(self.deps, "provider", None)
+        if provider is None:
+            self._log("尚未配置 API Key：请点「⚙ 设置」填写后保存", level="warn")
+            return None
+        return provider
 
     def _on_audit_retranslate(self, dlg) -> None:
         """全面审校结果面板「重译」：把命中的段落全部置为 FAILED 并落盘。
@@ -1251,7 +1579,8 @@ class PytranApp:
         dlg = QDialog(self._window)
         dlg.setWindowTitle("设置")
         dlg.setModal(True)
-        dlg.resize(640, 520)
+        # 常规页现有 17 个文本字段 + 1 个复核勾选框，640×520 会挤成一团
+        dlg.resize(680, 760)
 
         # 未配置模式（缺 API Key）也要能打开设置对话框填 Key：
         # 用 allow_missing_provider 避免 OpenAIProvider 构造时抛 OpenAIError。
@@ -1278,6 +1607,9 @@ class PytranApp:
             ("目标语言", "language", False),
             ("前文参考行数 (context_lines，0=关闭)", "context_lines", False),
             ("切块大小 (block_lines，行/块)", "block_lines", False),
+            ("复核模型 (review_model，空=沿用主模型)", "review_model", False),
+            ("复核窗口行数 (review_window_lines，行/次)", "review_window_lines", False),
+            ("复核输出上限 (review_max_tokens，含推理链余量)", "review_max_tokens", False),
         ]
         entries = {}
         for label, attr, secret in fields:
@@ -1286,6 +1618,11 @@ class PytranApp:
                 e.setEchoMode(QLineEdit.EchoMode.Password)
             form.addRow(label, e)
             entries[attr] = e
+        # 复核开关用勾选框：布尔语义不能走 QLineEdit——「False」字符串是真值，
+        # 直接 setattr 会把「关」写回成「开」（见 _coerce_setting 的 bool 分支）。
+        cb_review = QCheckBox("翻译完成后做全文复核（原文/译文逐行对照确认）")
+        cb_review.setChecked(bool(getattr(cfg, "review_enabled", True)))
+        form.addRow(cb_review)
         tabs.addTab(page_general, "常规")
 
         # ---- Tab 2: 术语表 ----
@@ -1328,6 +1665,7 @@ class PytranApp:
             "免翻英文短语（每行一个；译名留空的英文条目保存时自动加入）：")
         v.addWidget(exempt_label)
         exempt_edit = QPlainTextEdit("\n".join(profile.exempt_english))
+        exempt_edit.setObjectName("exempt_edit")
         exempt_edit.setMaximumHeight(80)
         v.addWidget(exempt_edit)
 
@@ -1445,12 +1783,61 @@ class PytranApp:
         page_rules = QWidget()
         rv = QVBoxLayout(page_rules)
         hint = QLabel("追加在系统提示词末尾的自定义规则（风格/人名/格式要求）。\n"
-                      "不要修改输出格式规则（JSONL）——那由程序保证。下次翻译生效。")
+                      "不要修改输出格式规则（JSONL）——那由程序保证。下次翻译生效。\n"
+                      "规则会同时镜像到 rules.txt（纯文本，可用记事本直接编辑）；"
+                      "profile.json 丢失时程序会从 rules.txt 自动恢复。")
         hint.setWordWrap(True)
         rv.addWidget(hint)
         rules_edit = QPlainTextEdit(
             profile.prompt_overrides.get("system_append", ""))
+        # 命名以便测试/自动化按名字定位（对话框里有两个 QPlainTextEdit：
+        # 免翻短语与翻译规则，靠 findChildren 的顺序取会取错）
+        rules_edit.setObjectName("rules_edit")
         rv.addWidget(rules_edit)
+
+        from pytran.profile_store import rules_path as _rules_path
+
+        def export_rules():
+            """立即把当前规则框内容写入 rules.txt（不依赖「保存」）。"""
+            from pytran.profile_store import write_rules
+            try:
+                path = write_rules(rules_edit.toPlainText().strip(), self.work_dir)
+            except OSError as exc:
+                QMessageBox.warning(dlg, "翻译规则", f"写入 rules.txt 失败：{exc}")
+                return
+            QMessageBox.information(dlg, "翻译规则", f"已导出到：\n{path}")
+
+        def import_rules():
+            from pytran.profile_store import read_rules
+            text = read_rules(self.work_dir)
+            if not text:
+                QMessageBox.information(
+                    dlg, "翻译规则", "rules.txt 不存在或为空（先导出或保存一次）。")
+                return
+            rules_edit.setPlainText(text)
+            QMessageBox.information(
+                dlg, "翻译规则", f"已从 rules.txt 载入 {len(text)} 字符（保存后写入 profile）。")
+
+        def open_rules_location():
+            path = _rules_path(self.work_dir)  # pragma: no cover
+            target = path if path.exists() else path.parent  # pragma: no cover
+            try:  # pragma: no cover
+                _os.startfile(str(target), "explore")
+            except OSError:  # pragma: no cover
+                QMessageBox.information(dlg, "翻译规则", f"路径：\n{target}")
+
+        rules_btns = QHBoxLayout()
+        btn_rules_export = QPushButton("导出到 rules.txt")
+        btn_rules_import = QPushButton("从 rules.txt 载入")
+        btn_rules_open = QPushButton("打开位置")
+        btn_rules_export.clicked.connect(export_rules)
+        btn_rules_import.clicked.connect(import_rules)
+        btn_rules_open.clicked.connect(open_rules_location)
+        rules_btns.addWidget(btn_rules_export)
+        rules_btns.addWidget(btn_rules_import)
+        rules_btns.addWidget(btn_rules_open)
+        rules_btns.addStretch(1)
+        rv.addLayout(rules_btns)
         tabs.addTab(page_rules, "翻译规则")
 
         layout = QVBoxLayout(dlg)
@@ -1462,6 +1849,9 @@ class PytranApp:
             # 直接 setattr 会把所有字段写成字符串——timeout / context_lines
             # 等会以 str 传给 SDK 与 Segmenter，必须走这条经过测试的路。
             values = {attr: e.text().strip() for attr, e in entries.items()}
+            # 勾选框不进 entries（它不是 QLineEdit）；单独按 bool 收敛后合并，
+            # 避免被 _coerce_setting 的字符串路径误判。
+            values["review_enabled"] = cb_review.isChecked()
             self._apply_settings(values)
 
             # 术语表：复用 terms.py 的纯逻辑（rows_to_terms 负责「空译名 +
@@ -1514,26 +1904,39 @@ class PytranApp:
             else:
                 self._apply_rules(append)
 
-            # W5b-续：保存时同步导出用户易编辑的术语表 CSV（glossary.csv）
-            from pytran.terms import write_glossary_csv_rows
+            # BUGFIX(profile-persist, 2026-10-25)：镜像文件（glossary.csv /
+            # rules.txt / exempt.txt）已由 _apply_terms / _apply_rules 里的
+            # save_profile 一并写出，这里只回读落盘结果做汇总展示——
+            # 不再用对话框打开时的旧 profile 快照导出 CSV（那份快照可能是
+            # 用户编辑前的数据，会写出与 profile.json 不一致的 CSV）。
+            # 注意：变量名不能叫 profile——那会遮蔽外层闭包的 profile，
+            # 使上面的 existing_terms / existing_append 变成 UnboundLocalError。
+            from pytran.profile_store import (
+                exempt_path, profile_path, rules_path,
+            )
+            latest = profile
             try:
-                csv_path = write_glossary_csv_rows(
-                    profile_to_rows(profile), self.work_dir)
-            except OSError as exc:
-                csv_path = None
-                logging.getLogger(__name__).warning("导出 glossary.csv 失败: %s", exc)
+                latest = self._load_profile()
+            except Exception as exc:  # noqa: BLE001 - 汇总失败不影响已落盘数据
+                logging.getLogger(__name__).warning("回读 profile 失败: %s", exc)
 
             # B6：保存结果汇总（W5b §3.2「弹窗汇总保存结果」）
             parts = [
-                "已保存到 config.ini / profile.json。",
-                f"术语 {len(profile.terms or {})} 条，"
-                f"免翻短语 {len(profile.exempt_english or [])} 条。",
+                f"已保存到 config.ini / {profile_path(self.work_dir).name}。",
+                f"术语 {len(latest.terms or {})} 条，"
+                f"免翻短语 {len(latest.exempt_english or [])} 条。",
             ]
-            if csv_path is not None:
-                parts.append(f"术语表 CSV：{csv_path}")
             if dups:  # 仅当真正改写术语表时才可能有重复合并提示
                 parts.append(f"重复原文已合并（后值覆盖）：{'、'.join(dups[:5])}"
                              + ("…" if len(dups) > 5 else ""))
+            parts.append("")
+            parts.append("以下镜像文件与 profile.json 内容同步，可用记事本直接编辑"
+                         "（丢失 profile.json 时可据此自动恢复）：")
+            parts.append(f"  术语表　{glossary_path(self.work_dir).name}")
+            parts.append(f"  翻译规则　{rules_path(self.work_dir).name}")
+            parts.append(f"  免翻短语　{exempt_path(self.work_dir).name}")
+            parts.append(f"目录：{self.work_dir}")
+            parts.append("")
             parts.append("API Key 写入本机 config.ini（已 gitignore，不进版本库）；"
                          "环境变量 TL_API_KEY 优先级更高。")
             parts.append("术语表与规则将在下次翻译时生效。")
@@ -1733,22 +2136,62 @@ class PytranApp:
             self._window, "选择 Ren'Py 游戏根目录（含 game/ 的目录）", initial_dir)
             
         if game_dir:
-            if self.project.segments or self.project.game_root != game_dir:
-                # 换了目录：旧工程数据（段列表/导入文件）全部作废，防止
-                # 旧游戏的可翻译行混进新游戏的审校列表。
-                from pytran.models import Project, SegmentStatus, ProjectStats
+            def _norm(p: str) -> str:
+                return os.path.normcase(os.path.abspath(str(p))) if p else ""
+
+            switching = _norm(self.project.game_root) != _norm(game_dir)
+            has_data = bool(self.project.segments)
+            # BUGFIX(data-loss, 2026-10-25)：旧实现只要「有段」或「换了目录」
+            # 就直接 unlink(profile.json / project.json) 且不备份——用户选一次
+            # 目录，12099 段译文与 118 条术语表当场消失（profile.json 无任何副本）。
+            # 现在：只在**真的换目录**时才重置，且必须先确认 + 先备份。
+            if switching and (has_data or self.project.game_root):
+                detail = (f"当前工程已导入 {len(self.project.segments)} 段"
+                          if has_data else "当前工程目录")
+                ans = QMessageBox.question(
+                    self._window, "切换游戏目录",
+                    f"要切换到新的游戏目录吗？\n\n"
+                    f"原目录：{self.project.game_root or '（未设置）'}\n"
+                    f"新目录：{game_dir}\n\n"
+                    f"{detail}，切换后当前工程的导入数据与术语表将被清空。\n"
+                    f"（会自动备份到 bak/ 目录，可随时找回）",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if ans != QMessageBox.StandardButton.Yes:
+                    self._log("已取消切换游戏目录，当前工程保持不变")
+                    return
+            if switching:
+                # 换目录：旧工程数据（段列表/导入文件）全部作废，防止旧游戏的
+                # 可翻译行混进新游戏的审校列表。先备份再清空（可恢复）。
+                bak = self._backup_current_project()
+                if bak is not None:
+                    self._log(f"已备份当前工程 → {bak}")
+                from pytran.models import Project
                 old_root = self.project.game_root
                 self.project = Project(version=3, app="pytran",
                                        game_root=game_dir)
                 self.state = type(self.state)(self.project)
-                # 上一游戏的术语表/提示词 profile 不可带入新游戏（§7.2）
+                # 上一游戏的术语表/提示词 profile 不可带入新游戏（§7.2），
+                # 但**不删除**——移到 bak/ 里留底（术语表是用户手工维护的资产）。
+                # BUGFIX(profile-persist, 2026-10-25)：必须连镜像一起搬走。
+                # 只搬 profile.json 会留下 glossary.csv / rules.txt / exempt.txt，
+                # 下一次 _load_profile 又会把旧游戏的术语和规则复活到新游戏上。
+                from pytran.profile_store import archive_profile_files
+                ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
                 try:
-                    (self.work_dir / "profile.json").unlink(missing_ok=True)
-                    (self.work_dir / "project.json").unlink(missing_ok=True)
-                except OSError:
-                    pass
+                    # tag 带 switched- 前缀：与 _backup_current_project 刚写出的
+                    # profile-<ts>.json 备份快照区分开，避免同秒互相覆盖。
+                    moved = archive_profile_files(
+                        self.work_dir, tag=f"switched-{ts}")
+                except OSError as exc:  # noqa: BLE001
+                    moved = []
+                    self._log(f"旧术语表移存失败（已保留原文件）：{exc}", level="warn")
+                if moved:
+                    self._log("旧术语表已移入 bak/："
+                              + "、".join(p.name for p in moved))
                 self._log(f"已切换游戏目录（{old_root or '无'} → {game_dir}），"
-                          "旧导入数据与术语表已清空")
+                          "旧导入数据已清空（备份在 bak/）")
             self.project.game_root = game_dir
             JsonProjectStore().save(self.project, self.work_dir)
             self.state.goto(1)
@@ -1870,6 +2313,11 @@ class PytranApp:
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if ret != QMessageBox.StandardButton.Yes:
             return
+        # BUGFIX(data-loss, 2026-10-25)：清空同样会覆写 project.json，
+        # 与「切换目录」同属破坏性操作，必须先留底再动手。
+        bak = self._backup_current_project()
+        if bak is not None:
+            self._log(f"清空前已备份当前工程 → {bak}")
         from pytran.models import Project, SegmentStatus
         game_root = self.project.game_root
         self.project = Project(version=3, app="pytran", game_root=game_root)
@@ -1983,6 +2431,11 @@ class PytranApp:
         from pytran.models import GameFile
         from pytran.project import build_project
         import hashlib
+        # BUGFIX(data-loss, 2026-10-25)：导入会整包覆写 project.json，
+        # 与清空/切换目录同级，先留底再写。
+        bak = self._backup_current_project()
+        if bak is not None:
+            self._log(f"导入前已备份当前工程 → {bak.name}")
         gf = []
         for rel, rpy in files:
             gf.append(GameFile(name=rel, sha256=hashlib.sha256(rpy.read_bytes()).hexdigest(), game_relpath=rel))
@@ -2122,7 +2575,8 @@ class PytranApp:
             f"{' → ' + cfg.fallback_model if cfg.fallback_model else ''}"
             f"  |  并发 {cfg.max_workers}  温度 {cfg.temperature}"
             f"  块大小 {getattr(cfg, 'block_lines', 30)} 行"
-            f"  前文 {getattr(cfg, 'context_lines', 3)} 行\n"
+            f"  前文 {getattr(cfg, 'context_lines', 3)} 行"
+            f"  复核 {'开 ' + str(getattr(cfg, 'review_window_lines', 2000)) + ' 行/次' if getattr(cfg, 'review_enabled', True) else '关'}\n"
             f"待译 {pending} 行，估算约 {estimate:,} token"
             + (f"（预算上限 {self._budget_max:,}）" if self._budget_max else "")
         )

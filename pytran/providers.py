@@ -49,6 +49,11 @@ _PREVIEW_CHARS = 120
 TIMEOUT_REF_LINES = 10   # 基准行数：≤10 行用 config.timeout 原值
 TIMEOUT_MAX = 900.0      # 硬上限，避免异常配置把单次请求拖到不可控
 
+# 全文复核（review）的超时口径：窗口可达 2000 行，输出量远大于翻译批次，
+# 沿用 TIMEOUT_MAX=900s 仍可能不够（R1 类推理模型逐行回执 2000 行 ≈ 5000
+# token 生成）。复核是**增益操作**：超时就少复核一些，因此给独立上限。
+REVIEW_TIMEOUT_MAX = 1800.0
+
 
 class OpenAIProvider:
     """Provider 实现（interfaces.Provider）。`client` 可注入，便于测试替身。"""
@@ -104,6 +109,50 @@ class OpenAIProvider:
         logger.debug("术语抽取响应预览：%s", self._preview(content))
         return content
 
+    # -- 全文复核（review） ---------------------------------------------------
+    def review_text(
+        self,
+        prompt: str,
+        system: str = "",
+        *,
+        max_tokens: int | None = None,
+        line_count: int = 0,
+    ) -> str:
+        """全文复核通道：走复核模型 + 复核输出上限，单次请求、可重试。
+
+        与 ``complete_text`` 的区别（W5h 后续 / 用户 2026-10-24 决策）：
+
+        * 模型取 ``config.review_model``（空则退 ``config.model``）——
+          复核是「另一个人再看一遍」，与翻译模型解耦；
+        * ``max_tokens`` 取 ``config.review_max_tokens``——复核每行都要回执，
+          输出量远大于术语抽取，512 一定截断；
+        * 超时按本次窗口行数放大（复用 ``_effective_timeout``）——2000 行
+          窗口的生成时间远不止 60s；
+        * 走 ``_request_with_retry``：复核是可重试的增益操作，网络抖动
+          不该让整段窗口变成「未确认」。
+        """
+        prompt = str(prompt or "")
+        if not prompt.strip():
+            return ""
+        self._require_api_key()
+        messages: list[dict[str, str]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        model = (getattr(self._config, "review_model", "") or self._config.model
+                 or self._config.fallback_model)
+        budget = int(max_tokens if max_tokens is not None
+                     else getattr(self._config, "review_max_tokens", 8192) or 8192)
+        params: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max(1, budget),
+            "timeout": self._effective_timeout(line_count, REVIEW_TIMEOUT_MAX),
+        }
+        logger.debug("复核请求 model=%s 共%d行（prompt %d 字符）",
+                     model, line_count, len(prompt))
+        return self._request_with_retry(params, [0])
+
     # -- 契约方法（interfaces.Provider） --------------------------------------
     def translate_batch(
         self,
@@ -148,19 +197,23 @@ class OpenAIProvider:
         return dict(parsed.results)
 
     # -- 内部 -----------------------------------------------------------------
-    def _effective_timeout(self, line_count: int) -> float:
+    def _effective_timeout(self, line_count: int,
+                           cap: float = TIMEOUT_MAX) -> float:
         """按本次批量行数放大超时（BUGFIX(timeout-amplify)）。
 
         `config.timeout` 是「10 行基准块」的口径；块越大，单次生成越久。
-        向上取整到 TIMEOUT_REF_LINES 的整数倍，并夹在 [base, TIMEOUT_MAX]。
+        向上取整到 TIMEOUT_REF_LINES 的整数倍，并夹在 [base, cap]。
         `timeout <= 0` 视为「不限」，直接给硬上限。
+
+        ``cap`` 由调用方给：翻译用 ``TIMEOUT_MAX``，全文复核用更宽的
+        ``REVIEW_TIMEOUT_MAX``（复核窗口可达 2000 行）。
         """
         base = float(self._config.timeout)
         if base <= 0:
-            return TIMEOUT_MAX
+            return cap
         lines = max(0, int(line_count))
         batches = (lines + TIMEOUT_REF_LINES - 1) // TIMEOUT_REF_LINES
-        return min(TIMEOUT_MAX, max(base, base * batches))
+        return min(cap, max(base, base * batches))
 
     def _require_api_key(self) -> None:
         # ADR-0004：key 只来自环境/配置注入；缺失时给出可操作提示，不回显任何值

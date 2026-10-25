@@ -582,6 +582,11 @@ def parse_response(
         reasons = _extract_reasons(raw)
         pending_keep = {uid: (text, reasons.get(uid, "")) for uid, (text, _) in pending_keep.items()}
 
+    # V7（编号错配启发式检测）已删除（用户要求 2026-10-24）。
+    # 原逻辑用「同译文多原文 / 相邻长度倒挂 / 尖叫行交叉」推断错配，既有漏报
+    # 也会误报，无法满足「100% 判断」的要求。现改由「全面审校」面板的
+    # 「AI 校对」按钮做全文逐行对照复核（见 ``pytran/review.py``）。
+
     # §5.4 护栏 4（双闸）
     # 批次口径：分母取**本批实际返回且被请求的行数**（理由见下）；低于 KEEP_DECLARE_MIN_BATCH
     # 行的批次不触发单批降级闸——单行/人名/拟声词这类小批次的合法申报，交由护栏 1/2

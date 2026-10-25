@@ -68,11 +68,13 @@ def qt_app():
 
 
 @pytest.fixture()
-def gui(qt_app, monkeypatch):
+def gui(qt_app, monkeypatch, tmp_path):
     """构建真实窗口（不进入事件循环），返回 PytranApp。"""
     # run() 末尾会阻塞在 app.exec()；替换为立即返回来只验证构建与刷新。
     monkeypatch.setattr(QApplication, "exec", lambda self: 0, raising=False)
-    app = PytranApp(_make_project(), work_dir=".")
+    # 隔离工作目录：绝不能用 "."——真实应用的 work_dir 就是仓库根，
+    # 那里放着用户自己的 project.json / profile.json（见 conftest 守卫）。
+    app = PytranApp(_make_project(), work_dir=str(tmp_path))
     app._log = lambda *a, **k: None  # 静默日志，保持测试输出干净
     app.run()
     yield app
@@ -174,9 +176,10 @@ def _mixed_project() -> Project:
 
 
 @pytest.fixture()
-def mixed_gui(qt_app, monkeypatch):
+def mixed_gui(qt_app, monkeypatch, tmp_path):
     monkeypatch.setattr(QApplication, "exec", lambda self: 0, raising=False)
-    app = PytranApp(_mixed_project(), work_dir=".")
+    # 隔离工作目录（理由同 gui fixture）
+    app = PytranApp(_mixed_project(), work_dir=str(tmp_path))
     app._log = lambda *a, **k: None
     app.run()
     yield app

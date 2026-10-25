@@ -34,6 +34,120 @@ def work_dir(tmp_path: Path) -> Path:
     return tmp_path
 
 
+# ---------------------------------------------------------------------------
+# 防误清空守卫（2026-10-25 事故回归）
+#
+# 背景：真实应用的 work_dir 就是仓库根（``运行.bat`` 传 ``--work-dir "%~dp0."``），
+# 而仓库根正是用户自己的 project.json / profile.json / glossary.csv 所在处。
+# 历史上测试里写过 ``PytranApp(proj, work_dir=".")``，一旦被测代码调用
+# ``JsonProjectStore().save(...)`` 或 ``TermProfile.save(...)``，就会用测试用的
+# 空工程覆盖用户的真实数据（2026-10-25 已发生一次：12099 段 + 118 条术语被清空）。
+#
+# 守卫策略：任何测试只要试图把 project.json / profile.json 写进仓库根，
+# 立即 fail 并给出明确提示，改用 ``tmp_path``。
+# ---------------------------------------------------------------------------
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _is_repo_root(path) -> bool:
+    try:
+        return Path(path).resolve() == _REPO_ROOT
+    except OSError:  # pragma: no cover - 路径不可解析时不拦
+        return False
+
+
+@pytest.fixture(autouse=True)
+def _forbid_writes_into_repo_root(monkeypatch):
+    """自动生效：禁止测试把工程数据写进仓库根。"""
+    from pytran.project import JsonProjectStore
+
+    real_save = JsonProjectStore.save
+
+    def guarded_save(self, project, work_dir):  # noqa: ANN001
+        if _is_repo_root(work_dir):
+            raise AssertionError(
+                "测试试图把 project.json 写进仓库根 "
+                f"({_REPO_ROOT})——那里是用户的真实工程数据。"
+                "请给 PytranApp / JsonProjectStore.save 传 tmp_path。"
+            )
+        return real_save(self, project, work_dir)
+
+    monkeypatch.setattr(JsonProjectStore, "save", guarded_save, raising=False)
+
+    try:
+        from pytran.config import TermProfile
+    except Exception:  # pragma: no cover - 模块不可用时跳过该分支
+        TermProfile = None
+
+    if TermProfile is not None and hasattr(TermProfile, "save"):
+        real_profile_save = TermProfile.save
+
+        def guarded_profile_save(self, path):  # noqa: ANN001
+            parent = Path(path).resolve().parent
+            if parent == _REPO_ROOT:
+                raise AssertionError(
+                    f"测试试图把 profile.json 写进仓库根 ({_REPO_ROOT})——"
+                    "那里是用户的真实术语表/翻译规则。请传 tmp_path。"
+                )
+            return real_profile_save(self, path)
+
+        monkeypatch.setattr(TermProfile, "save", guarded_profile_save, raising=False)
+
+    # BUGFIX(profile-persist, 2026-10-25)：术语/规则现在还会以镜像形式写到
+    # glossary.csv / rules.txt / exempt.txt，而 write_mirrors / save_profile
+    # 是直接 path.write_text，绕过了上面 TermProfile.save 的守卫。
+    # 这里把 profile_store 的写入口也一并拦下，否则一个 work_dir="." 的测试
+    # 就能把用户的真实术语表和翻译规则镜像覆盖掉。
+    try:
+        from pytran import profile_store as _profile_store
+    except Exception:  # pragma: no cover - 模块不可用时跳过
+        _profile_store = None
+
+    if _profile_store is not None:
+        _real_save_profile = _profile_store.save_profile
+        _real_write_mirrors = _profile_store.write_mirrors
+
+        def _reject_repo_root(work_dir, what: str) -> None:
+            if _is_repo_root(work_dir):
+                raise AssertionError(
+                    f"测试试图把{what}写进仓库根 ({_REPO_ROOT})——"
+                    "那里是用户的真实术语表/翻译规则。请传 tmp_path。"
+                )
+
+        def guarded_save_profile(profile, work_dir, filename="profile.json"):  # noqa: ANN001
+            _reject_repo_root(work_dir, " profile.json")
+            return _real_save_profile(profile, work_dir, filename)
+
+        def guarded_write_mirrors(profile, work_dir):  # noqa: ANN001
+            _reject_repo_root(work_dir, "术语/规则镜像")
+            return _real_write_mirrors(profile, work_dir)
+
+        monkeypatch.setattr(
+            _profile_store, "save_profile", guarded_save_profile, raising=False)
+        monkeypatch.setattr(
+            _profile_store, "write_mirrors", guarded_write_mirrors, raising=False)
+
+    try:
+        from pytran.ui import PytranApp
+    except Exception:  # pragma: no cover - 无 PyQt6 环境
+        yield
+        return
+
+    real_init = PytranApp.__init__
+
+    def guarded_init(self, project, **kwargs):  # noqa: ANN001
+        wd = kwargs.get("work_dir")
+        if wd is not None and _is_repo_root(wd):
+            raise AssertionError(
+                'PytranApp(work_dir=".") 会指向仓库根，从而污染用户真实工程数据。'
+                "请改用 work_dir=str(tmp_path)。"
+            )
+        return real_init(self, project, **kwargs)
+
+    monkeypatch.setattr(PytranApp, "__init__", guarded_init, raising=False)
+    yield
+
+
 @pytest.fixture
 def profile() -> "TermProfile":
     """空术语表（无豁免）。"""

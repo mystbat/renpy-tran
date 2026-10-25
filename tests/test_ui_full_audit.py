@@ -54,11 +54,13 @@ def qt_app():
 
 
 @pytest.fixture()
-def gui(qt_app, monkeypatch, request):
+def gui(qt_app, monkeypatch, request, tmp_path):
     """构建真实窗口（不进入事件循环），返回 PytranApp。"""
     segments = list(getattr(request, "param", []))
     monkeypatch.setattr(QApplication, "exec", lambda self: 0, raising=False)
-    app = PytranApp(_make_project(segments), work_dir=".")
+    # 隔离工作目录：绝不能用 "."——真实应用的 work_dir 就是仓库根，
+    # 那里放着用户自己的 project.json / profile.json（见 conftest 守卫）。
+    app = PytranApp(_make_project(segments), work_dir=str(tmp_path))
     app._log = lambda *a, **k: None
     app.run()
     yield app
@@ -178,14 +180,14 @@ def test_term_applied_not_flagged() -> None:
 # ---------------------------------------------------------------------------
 # 9. 双击定位：切到该 uid 所在审校行（只读）
 # ---------------------------------------------------------------------------
-def test_double_click_locates_uid(qt_app, monkeypatch) -> None:
+def test_double_click_locates_uid(qt_app, monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(QApplication, "exec", lambda self: 0, raising=False)
     proj = _make_project([
         _seg(1, "Hello", "你好"),
         _seg(2, "He {size=40}smiled{/size}", "他笑了"),  # 问题段 uid=2
         _seg(3, "Goodbye", "再见"),
     ])
-    app = PytranApp(proj, work_dir=".")
+    app = PytranApp(proj, work_dir=str(tmp_path))
     app._log = lambda *a, **k: None
     app.run()
     try:
@@ -240,14 +242,14 @@ def test_full_audit_is_readonly() -> None:
 # ---------------------------------------------------------------------------
 # 13. GUI 面板：有问题时按钮产出非空结果且能构建面板
 # ---------------------------------------------------------------------------
-def test_gui_full_audit_button_populates_results(qt_app, monkeypatch) -> None:
+def test_gui_full_audit_button_populates_results(qt_app, monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(QApplication, "exec", lambda self: 0, raising=False)
     proj = _make_project([
         _seg(1, "He {size=40}smiled{/size}", "他笑了"),
         _seg(2, "Ian left", "他离开了"),  # 同时漏译术语 Ian
     ])
     profile = TermProfile(terms={"Ian": "伊恩"})
-    app = PytranApp(proj, work_dir=".")
+    app = PytranApp(proj, work_dir=str(tmp_path))
     app._log = lambda *a, **k: None
     app.run()
     try:

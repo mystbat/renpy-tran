@@ -12,8 +12,10 @@ import pytest
 from pytran.config import Config
 from pytran.interfaces import ProviderError
 from pytran.providers import (
+    REVIEW_TIMEOUT_MAX,
     TERM_EXTRACT_MAX_TOKENS,
     TERM_EXTRACT_TIMEOUT,
+    TIMEOUT_MAX,
     OpenAIProvider,
 )
 
@@ -166,6 +168,75 @@ def test_config_other_fields_unaffected() -> None:
     assert cfg.temperature == 0.7
     assert cfg.timeout == 60.0
     assert cfg.term_extract_use_ai is True
+
+
+# --------------------------------------------------------------------------- #
+# 全文复核通道 review_text（用户 2026-10-24 决策）
+# --------------------------------------------------------------------------- #
+def test_review_text_uses_review_model_and_budget() -> None:
+    """复核走 config.review_model + review_max_tokens，不继承翻译口径。"""
+    client = _FakeClient()
+    p = OpenAIProvider(
+        _cfg(model="translate-m", review_model="review-m", review_max_tokens=8192,
+             max_tokens=2048, timeout=60.0),
+        client=client)
+    p.review_text("prompt", system="逐行判断", line_count=2000)
+    assert client.captured["model"] == "review-m"
+    assert client.captured["max_tokens"] == 8192
+    assert client.captured["messages"][0] == {"role": "system", "content": "逐行判断"}
+
+
+def test_review_text_model_falls_back_when_unset() -> None:
+    """复核模型未配置 → 退 config.model（再退 fallback_model）。"""
+    client = _FakeClient()
+    p = OpenAIProvider(_cfg(model="translate-m", review_model=""), client=client)
+    p.review_text("x")
+    assert client.captured["model"] == "translate-m"
+
+    client2 = _FakeClient()
+    p2 = OpenAIProvider(
+        _cfg(model="", review_model="", fallback_model="fb-m"), client=client2)
+    p2.review_text("x")
+    assert client2.captured["model"] == "fb-m"
+
+
+def test_review_text_explicit_max_tokens_wins() -> None:
+    """显式 max_tokens 优先于 config（runner 按窗口调整）。"""
+    client = _FakeClient()
+    p = OpenAIProvider(_cfg(review_max_tokens=8192), client=client)
+    p.review_text("x", max_tokens=1234)
+    assert client.captured["max_tokens"] == 1234
+
+
+def test_review_text_timeout_cap_is_wider_than_translate() -> None:
+    """复核窗口可达 2000 行，超时上限用 REVIEW_TIMEOUT_MAX 而非 TIMEOUT_MAX。"""
+    client = _FakeClient()
+    p = OpenAIProvider(_cfg(timeout=60.0), client=client)
+    p.review_text("x", line_count=2000)
+    # 60 × ceil(2000/10) = 12000 → 夹到复核上限
+    assert client.captured["timeout"] == REVIEW_TIMEOUT_MAX == 1800.0
+    # 翻译口径不变：同一行数在翻译通道仍夹到 TIMEOUT_MAX
+    assert p._effective_timeout(2000) == TIMEOUT_MAX
+
+
+def test_review_text_blank_prompt_short_circuits() -> None:
+    """空 prompt 不发请求。"""
+    client = _FakeClient()
+    p = OpenAIProvider(_cfg(), client=client)
+    assert p.review_text("  ") == ""
+    assert client.captured is None
+
+
+def test_review_text_requires_api_key() -> None:
+    p = OpenAIProvider(_cfg(api_key=""), client=_FakeClient())
+    with pytest.raises(ProviderError):
+        p.review_text("x")
+
+
+def test_review_text_wraps_errors() -> None:
+    p = OpenAIProvider(_cfg(), client=_BoomClient())
+    with pytest.raises(ProviderError):
+        p.review_text("x")
 
 
 if __name__ == "__main__":  # pragma: no cover

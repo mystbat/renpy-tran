@@ -100,6 +100,18 @@ def test_v6_var_dropped_is_error():
     assert tags_ok("Hi [player_name]", "你好") is False
 
 
+def test_v6_t_modifier_is_same_tag():
+    # Ren'Py 的 `!t` 翻译修饰符只用于方括号变量标签，不改变其身份：
+    # [e_name] ≡ [e_name!t]
+    assert tags_ok("[e_name!t] 你好", "[e_name] 你好") is True
+    msgs = tag_messages("[e_name!t] 你好", "[e_name] 你好")
+    assert msgs == []  # 不误报标签改动
+    # 花括号文本标签 {w} 没有 !t 写法，保持原样比较
+    assert tags_ok("{w!t} x", "{w} x") is False
+    # 真正的标签改动仍应报错
+    assert tags_ok("[e_name!t] 你好", "你好") is False
+
+
 def test_v6_escape_count():
     src = r'He said \"hi\"\n'
     assert tags_ok(src, r'他说\"嗨\"\n') is True

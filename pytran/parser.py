@@ -219,6 +219,13 @@ class RenpyParser:
         Returns the full file text. Untranslated source lines are reproduced
         verbatim; translated dialogue lines have only their quoted text
         swapped. Unparseable / skipped blocks are emitted exactly as parsed.
+
+        BUGFIX(regenerate-uid-index)：段索引同时按 locator 与 uid 建。
+        locator 是主匹配键（行号定位，设计 §6.1）；uid 唯一性由分配层
+        保证（pytran.uids，稳定 uid），作为**冲突仲裁键**——同一 locator
+        出现多段时（异常数据/手工构造），按 uid 升序取第一段，避免
+        「后者静默覆盖前者」的字典行为把前一段译文丢掉
+        （用户实测边界：locator 撞车时 line one 行错拿 SECOND，FIRST 丢失）。
         """
         lines = self._lines_by_file.get(file_name)
         if not lines:
@@ -228,11 +235,16 @@ class RenpyParser:
                 file_name,
             )
             return ""
-        line_for: dict[tuple[str, str], Segment] = {
-            (seg.file, seg.locator): seg
-            for seg in project.segments
-            if seg.file == file_name
-        }
+        # 按 locator 分组（**含无译文段**：第一段无译文即视为该行未译，
+        # 不允许同 locator 的后段补位——无译文是明确信号，不是"跳过"）
+        by_loc: dict[str, list[Segment]] = {}
+        for seg in project.segments:
+            if seg.file == file_name:
+                by_loc.setdefault(seg.locator, []).append(seg)
+        line_for: dict[str, Segment] = {}
+        for loc, loc_segs in by_loc.items():
+            loc_segs.sort(key=lambda s: s.uid)  # 撞车时 uid 升序第一段胜出
+            line_for[loc] = loc_segs[0]
         out: list[str] = []
         for idx, original in enumerate(lines):
             content, term = _split_keepends(original)
@@ -242,7 +254,7 @@ class RenpyParser:
             # 用错文件名导致查不到任何段 → 除最后解析的文件外全部原样
             # 输出（译文静默丢失，用户实测 2026-10-23）。
             locator = f"# game/{file_name}:{idx + 1}"
-            seg = line_for.get((file_name, locator))
+            seg = line_for.get(locator)
             if seg is not None and seg.target:
                 out.append(_replace_dialogue(content, seg.target) + term)
             else:

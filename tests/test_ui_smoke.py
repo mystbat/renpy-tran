@@ -17,9 +17,11 @@ def test_ui_import_no_tkinter_side_effect() -> None:
     assert hasattr(pytran.ui, "PytranApp")
 
 
-def test_pytran_app_construction_and_event_bridge() -> None:
+def test_pytran_app_construction_and_event_bridge(tmp_path) -> None:
     proj = Project(segments=[])
-    app = PytranApp(proj, work_dir=".")
+    # 隔离工作目录：绝不能用 "."——真实应用的 work_dir 就是仓库根，
+    # 那里放着用户自己的 project.json / profile.json（见 conftest 守卫）。
+    app = PytranApp(proj, work_dir=str(tmp_path))
     # 后台线程只发事件：入队
     app.on_event("log", {"message": "hello"})
     app.on_event("progress", {})
