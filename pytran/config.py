@@ -9,6 +9,20 @@
   「翻译后全文复核」（AI 校对）阶段取代已删除的 V7 批次指纹检测
   （见 docs/FEATURE-ai-review.md）。**仅新增，未改动任何既有字段语义**；
   按 docs/W5c L127 惯例，config.py 加字段需总控确认，本条目即为该确认。
+- 2026-10-25 经总控批准新增 ``[Model]`` 段 1 字段 ``enable_thinking``
+  （思维链开关，默认 ``true`` = 维持既有行为）。**仅新增，未改动任何
+  既有字段语义**；缺省值使旧 config.ini 无需迁移即可继续工作。
+  实测依据（SiliconFlow）：Qwen3-8B 默认输出 85 reasoning tokens /
+  4.4s，置 ``false`` 后 0 reasoning / 0.5s，即推理链吃掉约 87% 输出
+  预算——这正是 TPM 限流雪崩的放大源。注意该开关只对混合推理模型
+  （Qwen3 系列）生效，纯推理模型（DeepSeek-R1）不响应。
+- 2026-10-25 经总控批准新增 ``[Engine]`` 段 1 字段
+  ``fallback_after_failures``（主模型连续失败多少次后切回退模型；
+  ``0`` = 永不回退，为默认值 = 维持既有行为）。**仅新增，未改动任何
+  既有字段语义**。背景：既有 STUCK 三档要连续 3 轮哈希相同才升到
+  「切备用模型」档，而 ``round_budget_cap`` 只有 5，实测回退模型
+  只拿到 **1 次**尝试就撞轮数上限被判死——等于「有回退但形同虚设」。
+  新字段让用户按失败次数直接切，绕开三档的轮次消耗。
 """
 from __future__ import annotations
 
@@ -51,12 +65,14 @@ fallback_model =
 max_tokens = 2048
 temperature = 0.2
 top_p = 0.9
+enable_thinking = true
 
 [Engine]
 max_workers = 3
 timeout = 120
 max_retry_rounds = 3
 round_budget_cap = 5
+fallback_after_failures = 0
 keep_declare_rate_limit = 0.15
 keep_declare_min_batch = 5
 keep_declare_min_total = 20
@@ -85,10 +101,12 @@ _INI_SECTION_MAP: dict[tuple[str, str], str] = {
     ("Model", "max_tokens"): "max_tokens",
     ("Model", "temperature"): "temperature",
     ("Model", "top_p"): "top_p",
+    ("Model", "enable_thinking"): "enable_thinking",
     ("Engine", "max_workers"): "max_workers",
     ("Engine", "timeout"): "timeout",
     ("Engine", "max_retry_rounds"): "max_retry_rounds",
     ("Engine", "round_budget_cap"): "round_budget_cap",
+    ("Engine", "fallback_after_failures"): "fallback_after_failures",
     ("Engine", "keep_declare_rate_limit"): "keep_declare_rate_limit",
     ("Engine", "keep_declare_min_batch"): "keep_declare_min_batch",
     ("Engine", "keep_declare_min_total"): "keep_declare_min_total",
@@ -115,10 +133,19 @@ class Config:
     max_tokens: int = 2048
     temperature: float = 0.2
     top_p: float = 0.9
+    # 思维链开关（2026-10-25 新增）：True=允许模型输出推理链（既有行为），
+    # False=请求体带 extra_body.enable_thinking=False 抑制推理。
+    # 只影响**翻译**请求；复核请求不走此开关。
+    enable_thinking: bool = True
     max_workers: int = 3                 # §4.3 并发，config 可调
     timeout: float = 120.0               # 请求超时秒（§4.1）
     max_retry_rounds: int = 3            # 重译轮上限（config 不得超过 round_budget_cap，§5.3）
-    round_budget_cap: int = 5            # 代码硬上限（§5.3 无条件终止线）
+    round_budget_cap: int = 5
+    # 主模型连续失败多少次后切回退模型（2026-10-25 新增）。
+    # 0 = 永不回退（默认，维持既有行为）；需同时配置 fallback_model 才生效。
+    # 绕开 STUCK 三档的轮次消耗——三档要连续 3 轮哈希相同才切备用模型，
+    # 而 round_budget_cap 只有 5，导致回退模型只剩 1 次机会。
+    fallback_after_failures: int = 0            # 代码硬上限（§5.3 无条件终止线）
     keep_declare_rate_limit: float = 0.15  # §5.4 申报率阈值（ADR-0006 双口径）
     keep_declare_min_batch: int = 5      # §5.4 单批降级的最小样本量（ADR-0006）
     keep_declare_min_total: int = 20     # §5.4 累计闸的最小样本量（ADR-0006）
@@ -194,7 +221,8 @@ class Config:
     def _coerce_types(self) -> None:
         for int_attr in ("max_tokens", "max_workers", "max_retry_rounds", "round_budget_cap",
                          "keep_declare_min_batch", "keep_declare_min_total", "context_lines",
-                         "block_lines", "review_window_lines", "review_max_tokens"):
+                         "block_lines", "review_window_lines", "review_max_tokens",
+                         "fallback_after_failures"):
             try:
                 setattr(self, int_attr, int(getattr(self, int_attr)))
             except (TypeError, ValueError):
@@ -211,6 +239,9 @@ class Config:
         # 复核阶段开关（AI 校对）：默认开，与 ini 模板一致。
         self.review_enabled = _coerce_bool(
             getattr(self, "review_enabled", True), default=True)
+        # 思维链开关：默认 True（=维持既有行为，旧 ini 缺此键时不改变行为）。
+        self.enable_thinking = _coerce_bool(
+            getattr(self, "enable_thinking", True), default=True)
 
 
 @dataclass

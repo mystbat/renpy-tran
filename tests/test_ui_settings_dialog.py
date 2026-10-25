@@ -162,20 +162,20 @@ def test_saved_numeric_fields_are_not_strings(gui: PytranApp) -> None:
 
     # QLineEdit 无法按对象名查找（都是 _open_settings 里的局部变量），
     # 按当前值匹配。注意字段顺序（见 ui._open_settings 的 fields 清单）：
-    #   [api_key, api_url, model, fallback_model, max_tokens, temperature,
-    #    top_p, max_workers, timeout, max_retry_rounds, renpy_sdk_dir,
-    #    language, context_lines, block_lines,
-    #    review_model, review_window_lines, review_max_tokens]
-    # review_enabled 是 QCheckBox，不在 QLineEdit 计数内。
+    #   [api_key, api_url, model, fallback_model, fallback_after_failures,
+    #    max_tokens, temperature, top_p, max_workers, timeout,
+    #    max_retry_rounds, renpy_sdk_dir, language, context_lines,
+    #    block_lines, review_model, review_window_lines, review_max_tokens]
+    # review_enabled / enable_thinking 是 QCheckBox，不在 QLineEdit 计数内。
     from PyQt6.QtWidgets import QLineEdit
     lines = dlg.findChildren(QLineEdit)
-    assert len(lines) == 17, f"设置页应有 17 个文本字段，实际 {len(lines)}"
+    assert len(lines) == 18, f"设置页应有 18 个文本字段，实际 {len(lines)}"
 
     # 按下标取，避免同值字段（max_retry_rounds 与 context_lines 默认都是 3）歧义
-    timeout_edit = lines[8]     # 默认 "120.0"
-    retry_edit = lines[9]       # 默认 "3"
-    ctx_edit = lines[12]        # 默认 "3"
-    block_edit = lines[13]      # 默认 "30"
+    timeout_edit = lines[9]     # 默认 "120.0"
+    retry_edit = lines[10]      # 默认 "3"
+    ctx_edit = lines[13]        # 默认 "3"
+    block_edit = lines[14]      # 默认 "30"
     assert float(timeout_edit.text()) == 120.0
     assert int(retry_edit.text()) == 3
     assert int(ctx_edit.text()) == 3
@@ -281,9 +281,10 @@ def test_block_lines_field_present_in_settings(gui: PytranApp) -> None:
     dlg = _open_settings(gui)
     from PyQt6.QtWidgets import QLineEdit
     lines = dlg.findChildren(QLineEdit)
-    assert len(lines) == 17
-    # 第 14 个字段就是 block_lines，默认 30
-    assert lines[13].text() == "30", \
+    assert len(lines) == 18
+    # 第 15 个字段就是 block_lines，默认 30
+    # （2026-10-25 起 fallback_after_failures 插在 fallback_model 之后，下标 +1）
+    assert lines[14].text() == "30", \
         "设置页应有「切块大小 (block_lines)」字段（默认 30）"
 
 
@@ -300,10 +301,10 @@ def test_review_fields_present_and_defaulted(gui: PytranApp) -> None:
     from PyQt6.QtWidgets import QLineEdit
     lines = dlg.findChildren(QLineEdit)
     # 字段顺序见 _open_settings 的 fields 清单（末尾三个）
-    assert lines[14].text() == "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B", \
+    assert lines[15].text() == "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B", \
         "复核模型字段应默认 DeepSeek-R1-0528-Qwen3-8B"
-    assert lines[15].text() == "2000", "复核窗口行数字段应默认 2000"
-    assert lines[16].text() == "8192", "复核输出上限字段应默认 8192"
+    assert lines[16].text() == "2000", "复核窗口行数字段应默认 2000"
+    assert lines[17].text() == "8192", "复核输出上限字段应默认 8192"
 
 
 def test_review_window_and_model_are_saved_as_numeric(gui: PytranApp) -> None:
@@ -311,9 +312,9 @@ def test_review_window_and_model_are_saved_as_numeric(gui: PytranApp) -> None:
     dlg = _open_settings(gui)
     from PyQt6.QtWidgets import QLineEdit
     lines = dlg.findChildren(QLineEdit)
-    lines[14].setText("other/review-model")
-    lines[15].setText("500")
-    lines[16].setText("4096")
+    lines[15].setText("other/review-model")
+    lines[16].setText("500")
+    lines[17].setText("4096")
     _save_button(dlg).click()
 
     cfg = _current_config(gui)

@@ -521,8 +521,50 @@ def test_provider_empty_batch_makes_no_call():
 
 
 def test_provider_retries_on_429_with_backoff():
-    # 三次响应：两次 429 + 一次成功 → 退避 2.0s 后第 2 次、4.0s 后第 3 次
+    # BUGFIX(429-storm)：限流退避改用长间隔（20s/40s），因为实测服务端
+    # 只回 "TPM limit reached" 且**不带 Retry-After**，而 TPM 窗口的恢复
+    # 尺度是几十秒——旧的 2s/4s 退避在同一窗口内必然再次 429。
     provider, _, sleeps = _provider([RateLimitError("slow down"), RateLimitError("slow down"),
+                                     '{"i": 1, "t": "你好"}'])
+    out = provider.translate_batch([(1, "Hello")], TermProfile())
+    assert out == {1: "你好"}
+    assert sleeps == [20.0, 40.0]
+
+
+def test_provider_429_backoff_is_capped():
+    # 连续 429 时长退避不得无限增长（上限 120s）
+    provider, _, sleeps = _provider([RateLimitError("x")] * 5,
+                                    max_retry_rounds=5, round_budget_cap=5)
+    with pytest.raises(ProviderError):
+        provider.translate_batch([(1, "Hello")], TermProfile())
+    assert sleeps == [20.0, 40.0, 80.0, 120.0]
+
+
+def test_provider_honours_retry_after_header():
+    # 服务端若给了 Retry-After（秒），优先照办
+    exc = RateLimitError("slow down")
+    exc.response = SimpleNamespace(headers={"retry-after": "7"})
+    provider, _, sleeps = _provider([exc, '{"i": 1, "t": "你好"}'])
+    out = provider.translate_batch([(1, "Hello")], TermProfile())
+    assert out == {1: "你好"}
+    assert sleeps == [7.0]
+
+
+def test_provider_retry_after_header_is_capped():
+    # 异常大的 Retry-After 也要封顶，避免单次请求被拖到不可控
+    exc = RateLimitError("slow down")
+    exc.response = SimpleNamespace(headers={"retry-after": "99999"})
+    provider, _, sleeps = _provider([exc, '{"i": 1, "t": "你好"}'])
+    provider.translate_batch([(1, "Hello")], TermProfile())
+    assert sleeps == [120.0]
+
+
+def test_provider_timeout_keeps_short_backoff():
+    # 非限流错误（超时/连接/5xx）仍用 §4.3 的 2s/4s，不被 429 的长退避波及
+    class APITimeoutError(Exception):
+        pass
+
+    provider, _, sleeps = _provider([APITimeoutError("t"), APITimeoutError("t"),
                                      '{"i": 1, "t": "你好"}'])
     out = provider.translate_batch([(1, "Hello")], TermProfile())
     assert out == {1: "你好"}

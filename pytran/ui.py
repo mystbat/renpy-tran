@@ -53,6 +53,7 @@ _NUMERIC_ATTRS = (
     "context_lines", "block_lines", "keep_declare_min_batch",
     "keep_declare_min_total", "temperature", "top_p", "timeout",
     "keep_declare_rate_limit", "review_window_lines", "review_max_tokens",
+    "fallback_after_failures",
 )
 
 # R2：翻译页「最新译文」预览面板单次保留的最大条数。
@@ -60,6 +61,10 @@ _NUMERIC_ATTRS = (
 # （实测 13.5 万条约 11 秒，见 UI-交付说明 §2）。200 条足够
 # 用户判断「译文风格/术语是否如预期」，又不会拖慢渲染。
 _PREVIEW_MAX_ROWS = 200
+
+# BUGFIX(ui-freeze)：日志面板保留的最大段落数。超出后 Qt 自动丢弃最旧
+# 段落，使文档长度、布局与重绘成本恒定（429 风暴/长跑场景必需）。
+_LOG_MAX_BLOCKS = 500
 
 
 class PytranApp:
@@ -97,6 +102,11 @@ class PytranApp:
         self._trial_lines: Optional[int] = None
         # 审校页：译文框是否存在未保存修改
         self._review_dirty = False
+        # BUGFIX(ui-freeze)：segment 事件合并刷新标记（见 _drain_events）
+        self._review_refresh_pending = False
+        # BUGFIX(ui-freeze)：uid→Segment 惰性索引（见 _seg_index）
+        self._seg_index_cache = None
+        self._seg_index_len = None
         # 导入页「翻译状态」列：本会话内已写回游戏目录的相对路径集合
         # （models.py 冻结不可落盘，故仅内存追踪；写回后置「已翻译」）。
         self._written_back_files: set[str] = set()
@@ -123,6 +133,11 @@ class PytranApp:
         except queue.Empty:
             pass
         finally:
+            # BUGFIX(ui-freeze)：segment 事件只置脏标记，排空结束后
+            # 合并成一次列表重建（见 _apply_event 的 segment 分支）。
+            if self._review_refresh_pending:
+                self._review_refresh_pending = False
+                self._refresh_review()
             # BUGFIX(busy-stuck) 最终防线：每轮事件排空后，若不在翻译中
             # 而主进度条仍处于 indeterminate（流动动画），强制恢复确定性。
             # 覆盖一切事件交叠/乱序场景（用户实测：工作完成后绿色流动
@@ -139,7 +154,16 @@ class PytranApp:
             # R2：每完成一行就即时入预览面板——用户不必切到审校页
             # 也能看到「已译内容」，确认翻译如预期进行（问题清单 R2）。
             self._on_segment_event(data)
-            self._refresh_review()
+            # BUGFIX(ui-freeze) 2026-10-25：此前这里**逐事件**调
+            # _refresh_review()，而它会 clear() 整个列表并重建（含
+            # review_items() 全量拷贝 + 逐条 QListWidgetItem 构造），
+            # 单个事件 O(N) → 一次排空 N 个事件 O(N²)。
+            # 实测（offscreen）：500 行 4.2ms / 1000 行 19ms /
+            # 2000 行 181ms / 4000 行 529ms——N 翻倍耗时涨 9.5 倍。
+            # 长跑工程（数万行）时主线程被排空循环独占，表现为
+            # 「软件失去响应」（用户实测）。改为置脏标记，由
+            # _drain_events 在**本次 tick 末尾只刷新一次**。
+            self._review_refresh_pending = True
         elif name == "log":
             self._log(data.get("message", ""), data.get("level", "info"))
         elif name == "round":
@@ -407,10 +431,19 @@ class PytranApp:
         raw = (str(raw) if raw is not None else "").strip()
         # 布尔字段：勾选框给的是 bool，转成 str 后 "False" 是真值字符串，
         # 直接 setattr 会让「关」变成「开」——必须先归一化。
-        if attr in ("review_enabled", "term_extract_use_ai"):
+        if attr in ("review_enabled", "term_extract_use_ai", "enable_thinking"):
             from pytran.config import _coerce_bool
             return _coerce_bool(raw, default=False)
         # 整数字段：0/负数会崩线程池或让循环永动，钳到 >=1
+        # 例外：fallback_after_failures 的 0 是**合法语义**（=不回退），
+        # 不能钳到 1，否则用户填 0 会变成「失败 1 次就切」。
+        if attr == "fallback_after_failures":
+            if not raw:
+                return None
+            try:
+                return max(0, int(raw))
+            except ValueError:
+                return None
         if attr in ("max_tokens", "max_workers", "round_budget_cap",
                     "max_retry_rounds", "context_lines", "block_lines",
                     "keep_declare_min_batch", "keep_declare_min_total",
@@ -625,6 +658,7 @@ class PytranApp:
                 seg.status = SegmentStatus.REVIEWED
 
         self.project = new_project
+        self._invalidate_seg_index()
         self.state = type(self.state)(self.project)
         self.state.goto(2)
         JsonProjectStore().save(self.project, self.work_dir)
@@ -657,6 +691,7 @@ class PytranApp:
             self._log(f"已备份当前工程至 {bak.name}（清空重导前的安全快照）")
         self._log(f"丢弃旧译文：translated {translated} 行 / reviewed {reviewed} 行")
         self.project = build_project(segs, files=gf, game_root=str(game_root or ""))
+        self._invalidate_seg_index()
         self.state = type(self.state)(self.project)
         self.state.goto(2)
         JsonProjectStore().save(self.project, self.work_dir)
@@ -1108,6 +1143,11 @@ class PytranApp:
         self._widgets["log"] = QTextEdit()
         self._widgets["log"].setReadOnly(True)
         self._widgets["log"].setFixedHeight(100)
+        # BUGFIX(ui-freeze) 2026-10-25：日志面板此前无行数上限，429 风暴
+        # （每块重试都打 warning）下会无限追加，QTextEdit 的布局与重绘
+        # 成本随文档增长，长跑时进一步拖慢主线程。
+        # setMaximumBlockCount 让 Qt 自动丢弃最旧段落，内存与重绘恒定。
+        self._widgets["log"].document().setMaximumBlockCount(_LOG_MAX_BLOCKS)
         main_layout.addWidget(self._widgets["log"])
         
         # Shortcuts — 单字符键仅在审校列表聚焦时生效（WidgetWithChildrenShortcut），
@@ -1597,6 +1637,8 @@ class PytranApp:
             ("模型地址 (URL)", "api_url", False),
             ("模型名称", "model", False),
             ("回退模型 (可选，漏翻重试时切换)", "fallback_model", False),
+            # FEATURE(fallback-after-failures)：0 = 永不回退（默认，行为与旧版一致）
+            ("失败几次后切回退模型 (0=不回退)", "fallback_after_failures", False),
             ("max_tokens（单次请求上限）", "max_tokens", False),
             ("temperature（0~1，越低越稳定）", "temperature", False),
             ("top_p", "top_p", False),
@@ -1612,12 +1654,35 @@ class PytranApp:
             ("复核输出上限 (review_max_tokens，含推理链余量)", "review_max_tokens", False),
         ]
         entries = {}
+        # FEATURE(enable-thinking)：先建好勾选框，供下面「模型名称」之后插入。
+        # 提前创建可保证 save() 里引用时一定存在（不依赖 fields 里是否有
+        # "model" 项——将来改字段名不会退化成 NameError）。
+        cb_thinking = QCheckBox("允许思维链（关闭可显著提速、省 token）")
+        cb_thinking.setChecked(bool(getattr(cfg, "enable_thinking", True)))
+        cb_thinking.setToolTip(
+            "勾选：允许模型先输出推理过程再给译文（默认，质量通常更好，"
+            "但慢且更耗 token）。\n"
+            "取消：请求带 enable_thinking=false，抑制推理链。\n\n"
+            "实测（Qwen3-8B 单行）：勾选 4.4 秒 / 85 个推理 token；"
+            "取消 0.5 秒 / 0 个推理 token。\n"
+            "注意：仅对 Qwen3 这类混合推理模型有效；"
+            "DeepSeek-R1 等纯推理模型不受此开关影响。\n"
+            "本开关只作用于翻译请求，不影响全文复核。"
+        )
+        cb_thinking.setObjectName("cb_enable_thinking")
+        _thinking_inserted = False
         for label, attr, secret in fields:
             e = QLineEdit(str(getattr(cfg, attr, "") or ""))
             if secret:
                 e.setEchoMode(QLineEdit.EchoMode.Password)
             form.addRow(label, e)
             entries[attr] = e
+            # 思维链开关紧跟「模型名称」下方（用户要求的界面位置）。
+            if attr == "model":
+                form.addRow(cb_thinking)
+                _thinking_inserted = True
+        if not _thinking_inserted:  # pragma: no cover - 防御：字段表被改坏时兜底
+            form.addRow(cb_thinking)
         # 复核开关用勾选框：布尔语义不能走 QLineEdit——「False」字符串是真值，
         # 直接 setattr 会把「关」写回成「开」（见 _coerce_setting 的 bool 分支）。
         cb_review = QCheckBox("翻译完成后做全文复核（原文/译文逐行对照确认）")
@@ -1852,6 +1917,8 @@ class PytranApp:
             # 勾选框不进 entries（它不是 QLineEdit）；单独按 bool 收敛后合并，
             # 避免被 _coerce_setting 的字符串路径误判。
             values["review_enabled"] = cb_review.isChecked()
+            # FEATURE(enable-thinking)：思维链开关同样是布尔，走同一收敛路径。
+            values["enable_thinking"] = cb_thinking.isChecked()
             self._apply_settings(values)
 
             # 术语表：复用 terms.py 的纯逻辑（rows_to_terms 负责「空译名 +
@@ -2171,6 +2238,7 @@ class PytranApp:
                 old_root = self.project.game_root
                 self.project = Project(version=3, app="pytran",
                                        game_root=game_dir)
+                self._invalidate_seg_index()
                 self.state = type(self.state)(self.project)
                 # 上一游戏的术语表/提示词 profile 不可带入新游戏（§7.2），
                 # 但**不删除**——移到 bak/ 里留底（术语表是用户手工维护的资产）。
@@ -2219,6 +2287,7 @@ class PytranApp:
             if self.project.segments:
                 from pytran.models import Project, SegmentStatus, ProjectStats
                 self.project = Project(version=3, app="pytran")
+                self._invalidate_seg_index()
                 self.state = type(self.state)(self.project)
                 self._log("已选择新文件：旧导入数据已清空")
             self._pending_rpy = rpy
@@ -2321,6 +2390,7 @@ class PytranApp:
         from pytran.models import Project, SegmentStatus
         game_root = self.project.game_root
         self.project = Project(version=3, app="pytran", game_root=game_root)
+        self._invalidate_seg_index()
         self.state = type(self.state)(self.project)
         JsonProjectStore().save(self.project, self.work_dir)
         self._log(f"工程已清空（原 {reviewed} 条已译/已审校记录一并移除）；"
@@ -2440,6 +2510,7 @@ class PytranApp:
         for rel, rpy in files:
             gf.append(GameFile(name=rel, sha256=hashlib.sha256(rpy.read_bytes()).hexdigest(), game_relpath=rel))
         self.project = build_project(segs, files=gf, game_root=str(game_root or ""))
+        self._invalidate_seg_index()
         self.state = type(self.state)(self.project)
         self.state.goto(2)
         JsonProjectStore().save(self.project, self.work_dir)
@@ -2670,10 +2741,33 @@ class PytranApp:
         uid = data.get("uid")
         if uid is None:
             return
-        seg = next((s for s in self.project.segments if s.uid == uid), None)
+        # BUGFIX(ui-freeze) 2026-10-25：原为
+        #   next((s for s in self.project.segments if s.uid == uid), None)
+        # 每个 segment 事件都线性扫全表 → 整轮翻译 O(N²)（实测 8000 行
+        # 单次排空 2.8s，数万行长跑时主线程被独占，表现为「失去响应」）。
+        # 改用惰性构建的 uid→Segment 索引，单事件 O(1)。
+        # 索引在工程被替换/重新导入时通过 _invalidate_seg_index 失效。
+        idx = self._seg_index()
+        seg = idx.get(uid)
         if seg is None:
             return
         self._append_preview(seg)
+
+    def _seg_index(self) -> dict:
+        """uid→Segment 惰性索引（BUGFIX(ui-freeze)：避免逐事件线性扫描）。"""
+        cached = getattr(self, "_seg_index_cache", None)
+        segs = self.project.segments
+        # 长度变化（导入/清空/新增）即重建；uid 在单个工程内唯一且稳定。
+        if cached is None or getattr(self, "_seg_index_len", None) != len(segs):
+            cached = {s.uid: s for s in segs}
+            self._seg_index_cache = cached
+            self._seg_index_len = len(segs)
+        return cached
+
+    def _invalidate_seg_index(self) -> None:
+        """工程内容被整体替换后调用，强制下次重建索引。"""
+        self._seg_index_cache = None
+        self._seg_index_len = None
 
     def _on_preview_pause_toggled(self, checked: bool) -> None:
         """暂停/恢复预览面板的自动滚动。"""

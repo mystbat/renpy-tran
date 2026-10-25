@@ -38,6 +38,21 @@ BACKOFF_FACTOR = 2.0
 _RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
 _PREVIEW_CHARS = 120
 
+# BUGFIX(429-storm) 2026-10-25：限流退避口径。
+# 用户实测日志：每块 `调用失败（RateLimitError），2s 后重试（1/2）`，
+# 随即 `translate_batch raised; marking requested rows missing` →
+# ProviderError「重试 2 次仍失败：RateLimitError」，整轮所有行判失败，
+# 下一轮重发又撞限流，形成雪崩。
+# 实测服务端响应（SiliconFlow）：
+#   status=429 code=50602 body={"message":"...TPM limit reached."}
+#   **且不带 Retry-After / x-ratelimit-* 任何头** —— 无法按服务端指示等待。
+# TPM（每分钟 token）窗口的恢复尺度是**几十秒**，而 2s 退避对限流
+# 等于立即重试：两次尝试都在同一窗口内，必然再次 429。
+# 对策：限流单独用更长的基础间隔与上限，且**不消耗**普通的尝试次数口径
+# 之外的额外预算（仍受 attempts 约束，保持 §4.3 单层状态机语义）。
+RATE_LIMIT_BACKOFF_BASE = 20.0   # 429 首次退避 20s（覆盖 TPM 窗口量级）
+RATE_LIMIT_BACKOFF_MAX = 120.0   # 429 单次退避上限，避免无限拉长
+
 # BUGFIX(timeout-amplify) 2026-10-24：超时口径。
 # 用户实测（清空工程重新导入后点翻译）：进度条一直滑 → APITimeoutError
 # → 「2s 后重试（1/2）」。两个叠加缺陷：
@@ -174,6 +189,14 @@ class OpenAIProvider:
         ctx = self._normalize_context(context)
         messages = build_messages(numbered_lines, profile, ctx, allow_keep_declare)
         params = build_request_params(self._config, messages, use_fallback_model)
+        # FEATURE(enable-thinking) 2026-10-25：思维链开关（设置里「允许思维链」）。
+        # 实测（SiliconFlow）：Qwen3-8B 默认输出 85 reasoning tokens / 4.4s，
+        # 置 False 后 0 reasoning / 0.5s——推理链吃掉约 87% 输出预算，是 TPM
+        # 限流雪崩的主要放大源，故关掉它同时缓解 429。
+        # 只作用于**翻译**请求（用户明确要求）；复核走 review_text，不在此处。
+        # 注意：True 时**不发**该参数，保持与历史请求逐字节一致（旧配置行为不变）。
+        if not getattr(self._config, "enable_thinking", True):
+            params["extra_body"] = {"enable_thinking": False}
         # BUGFIX(timeout-amplify)：按本批行数放大超时，覆盖整块生成耗时。
         params["timeout"] = self._effective_timeout(len(numbered_lines))
         sources = {uid: text for uid, text in numbered_lines}
@@ -257,7 +280,7 @@ class OpenAIProvider:
                 last_error = exc
                 if attempt >= attempts:
                     break
-                delay = BACKOFF_BASE * (BACKOFF_FACTOR ** (attempt - 1))
+                delay = self._retry_delay(exc, attempt)
                 logger.warning(
                     "调用失败（%s），%.0fs 后重试（%d/%d）", type(exc).__name__, delay, attempt, attempts
                 )
@@ -265,6 +288,62 @@ class OpenAIProvider:
         raise ProviderError(
             f"重试 {attempts} 次仍失败：{type(last_error).__name__ if last_error else 'unknown'}"
         )
+
+    @staticmethod
+    def _retry_delay(exc: BaseException, attempt: int) -> float:
+        """按错误类型决定退避秒数（BUGFIX 429-storm）。
+
+        优先级：
+        1. 服务端 ``Retry-After``（秒数或 HTTP-date）——有就照办，最准；
+        2. 限流（429 / RateLimit）→ 长退避（20s、40s、80s…，上限 120s），
+           因为 TPM 窗口的恢复尺度是几十秒，短退避必然再次撞限流；
+        3. 其它可重试错误（超时/连接/5xx）→ 沿用 §4.3 的 2s、4s、8s。
+        """
+        hinted = OpenAIProvider._parse_retry_after(exc)
+        if hinted is not None:
+            return min(hinted, RATE_LIMIT_BACKOFF_MAX)
+
+        status = getattr(exc, "status_code", None) or getattr(exc, "http_status", None)
+        name = type(exc).__name__.lower()
+        code = str(getattr(exc, "code", "") or getattr(exc, "type", "") or "").lower()
+        is_rate_limit = (
+            status == 429
+            or "ratelimit" in name
+            or any(k in code for k in ("rate_limit", "ratelimit", "50602"))
+        )
+        if is_rate_limit:
+            delay = RATE_LIMIT_BACKOFF_BASE * (BACKOFF_FACTOR ** (attempt - 1))
+            return min(delay, RATE_LIMIT_BACKOFF_MAX)
+        return BACKOFF_BASE * (BACKOFF_FACTOR ** (attempt - 1))
+
+    @staticmethod
+    def _parse_retry_after(exc: BaseException) -> float | None:
+        """从异常的响应头读 ``Retry-After``；读不到返回 None（§12：不记头内容）。"""
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers is None:
+            return None
+        try:
+            raw = headers.get("retry-after") or headers.get("Retry-After")
+        except Exception:  # noqa: BLE001 - 头对象可能是任意 Mapping 实现
+            return None
+        if not raw:
+            return None
+        text = str(raw).strip()
+        try:
+            value = float(text)
+        except ValueError:
+            # HTTP-date 形式：解析成绝对时间再折算
+            try:
+                from email.utils import parsedate_to_datetime
+                import datetime as _dt
+                when = parsedate_to_datetime(text)
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=_dt.timezone.utc)
+                value = (when - _dt.datetime.now(_dt.timezone.utc)).total_seconds()
+            except Exception:  # noqa: BLE001 - 非法日期当作没有提示
+                return None
+        return max(0.0, value)
 
     @staticmethod
     def _is_retryable(exc: BaseException) -> bool:

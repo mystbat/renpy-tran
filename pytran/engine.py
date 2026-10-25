@@ -37,6 +37,10 @@ ROUND_BUDGET_CAP = 5
 # §5.3 STUCK 三档策略升级（正常 → 详细原因 → 备用模型 → 强制失败）。
 STUCK_STAGES = 3
 
+# FEATURE(fallback-after-failures)：切到回退模型后，保证它至少能跑这么多轮。
+# 否则「主模型磨掉大半轮次预算 → 回退只拿到 1 次」的老问题依旧。
+FALLBACK_MIN_ROUNDS = 2
+
 # 失败原因码（写入 Segment.error，供 §6.5 人工通道回放）。
 REASON_ROUND_BUDGET = "round_budget"
 REASON_MODEL_FIXED_POINT = "model_fixed_point"
@@ -142,6 +146,17 @@ class TranslationEngine:
         use_fallback_model = False
         include_errors = False  # §5.3 第1次定点升级标志（合同暂无通道，记录+日志，见交付说明）
 
+        # FEATURE(fallback-after-failures) 2026-10-25：主模型连续失败 N 次后切回退。
+        # 背景：既有 STUCK 三档要连续 3 轮状态哈希相同才升到「切备用模型」档，
+        # 而 round_budget_cap 只有 5，实测回退模型只拿到 **1 次**尝试就撞轮数
+        # 上限被判死——「有回退但形同虚设」。
+        # 本开关按失败**轮次**直接切（默认 0 = 不启用，行为与旧版一致）。
+        # 回退后给足轮次：轮数上限动态放宽，保证回退模型至少能跑
+        # FALLBACK_MIN_ROUNDS 轮，不被 cap 提前截断。
+        fallback_after = max(0, int(getattr(config, "fallback_after_failures", 0) or 0))
+        consecutive_failures = 0   # 主模型连续「整轮零进展」计数
+        fallback_switched_round = 0
+
         # §5.4 累计闸计数器（引擎负责；单批闸由 provider 负责）
         declared_cumulative = 0
         processed_cumulative = 0
@@ -161,7 +176,12 @@ class TranslationEngine:
                 break
             round_no += 1
             # (1) 轮数硬上限：无条件终止线，先于一切检测判定（§5.3）
-            if round_no > cap:
+            # FEATURE(fallback-after-failures)：切换到回退模型后，把上限放宽到
+            # 保证回退模型至少跑 FALLBACK_MIN_ROUNDS 轮，避免「刚切过去就撞线」。
+            effective_cap = cap
+            if fallback_switched_round:
+                effective_cap = max(cap, fallback_switched_round + FALLBACK_MIN_ROUNDS)
+            if round_no > effective_cap:
                 self._force_fail(seg_map, queue, REASON_ROUND_BUDGET, on_event)
                 self._atomic_save(project, config)
                 break
@@ -192,6 +212,7 @@ class TranslationEngine:
                 })
 
             # 重新计算队列：仍为 FAILED 的行继续重译（§5.3：只重发失败行）
+            prev_queue_size = len(queue)
             queue = {uid for uid in queue if seg_map[uid].status == SegmentStatus.FAILED}
 
             if not queue:
@@ -199,6 +220,59 @@ class TranslationEngine:
                 on_event("progress", {"done": True, "round": round_no})
                 self._atomic_save(project, config)
                 break
+
+            # FEATURE(fallback-after-failures)：按「连续失败轮次」直接切回退模型。
+            # 判定放在 STUCK 之前：三档要连续 3 轮哈希相同才切备用模型，太慢；
+            # 用户要求「多次失败就跳」，故这里先判。
+            # 「本轮无进展」= 队列没缩小（一行都没救回来）。
+            if not use_fallback_model and fallback_after > 0:
+                if len(queue) >= prev_queue_size:
+                    consecutive_failures += 1
+                else:
+                    consecutive_failures = 0
+                if consecutive_failures >= fallback_after:
+                    if config.fallback_model:
+                        use_fallback_model = True
+                        fallback_switched_round = round_no
+                        # 关键：主模型阶段累积的 STUCK 计数必须清零。
+                        # 否则（如 fallback_after=3 时 stuck_count 已达 2）
+                        # 回退模型第 1 轮就凑满 STUCK_STAGES 被判死，
+                        # 「保证回退至少跑 N 轮」会落空。
+                        stuck_count = 0
+                        # 次数填太大时，主模型已磨掉大部分轮次预算，
+                        # 回退模型可能只剩 1 轮（实测 fallback_after=4 时正是如此）。
+                        # 不强行限制用户输入，但明确警告，避免用户以为配大了更保险。
+                        remaining = cap - round_no
+                        if remaining < FALLBACK_MIN_ROUNDS:
+                            on_event("log", {
+                                "message": (
+                                    f"提示：回退模型只剩 {max(0, remaining)} 轮预算"
+                                    f"（轮数上限 {cap}）。失败次数设得越大，"
+                                    "留给回退模型的轮次越少，建议改为 1~2。"
+                                ),
+                                "round": round_no,
+                            })
+                        on_event("log", {
+                            "message": (
+                                f"主模型连续 {consecutive_failures} 轮无进展，"
+                                f"切换到回退模型 {config.fallback_model}"
+                            ),
+                            "round": round_no,
+                        })
+                        logger.info(
+                            "switch to fallback model after %d failed rounds (round %d)",
+                            consecutive_failures, round_no)
+                    else:
+                        # 配了次数但没配回退模型 → 明确告警，避免用户以为生效了
+                        on_event("log", {
+                            "message": (
+                                f"主模型连续 {consecutive_failures} 轮无进展，"
+                                "但未配置回退模型（设置 → 回退模型），无法切换"
+                            ),
+                            "round": round_no,
+                        })
+                        logger.warning("fallback_after_failures set but no fallback_model configured")
+                        consecutive_failures = 0  # 不再重复告警
 
             # (3)-(5) 状态哈希判定
             state_key = self._state_key(seg_map, queue)
@@ -215,10 +289,17 @@ class TranslationEngine:
                 if stuck_count == 1:
                     include_errors = True  # 第1次定点：重发并逐行附具体错误原因
                 elif stuck_count == 2:
-                    use_fallback_model = bool(config.fallback_model)  # 第2次定点：切换备用模型
-                    if not config.fallback_model:
-                        # DECISION(§5.3)：无 fallback_model 时略升温（provider 默认温度，此处仅记录）
-                        logger.info("no fallback_model configured; STUCK stage 2 raises temperature (noop at provider)")
+                    # FEATURE(fallback-after-failures)：用户填 0 = 彻底禁用回退，
+                    # 连这一档的「切备用模型」也不做（用户要求：0 就是完全不回退）。
+                    if fallback_after == 0:
+                        logger.info(
+                            "fallback disabled (fallback_after_failures=0); "
+                            "STUCK stage 2 will NOT switch model")
+                    else:
+                        use_fallback_model = bool(config.fallback_model)  # 第2次定点：切换备用模型
+                        if not config.fallback_model:
+                            # DECISION(§5.3)：无 fallback_model 时略升温（provider 默认温度，此处仅记录）
+                            logger.info("no fallback_model configured; STUCK stage 2 raises temperature (noop at provider)")
             elif state_key in history:
                 # (5) CYCLE：与任意历史轮重复 → 直接收敛到 failed
                 logger.info("CYCLE detected (round %d); converging", round_no)

@@ -128,8 +128,8 @@ def test_block_lines_setting_present(gui: PytranApp) -> None:
     from PyQt6.QtWidgets import QLineEdit
     gui._open_settings()
     lines = gui._settings_dialog.findChildren(QLineEdit)
-    assert len(lines) == 17
-    assert lines[13].text() == "30"
+    assert len(lines) == 18
+    assert lines[14].text() == "30"
 
 
 # --------------------------------------------------------------------------- #
