@@ -67,6 +67,24 @@ _PREVIEW_MAX_ROWS = 200
 _LOG_MAX_BLOCKS = 500
 
 
+class _MergeRow:
+    """合并导入的外来译文行（duck-type identity.resolve_batch 所需字段）。
+
+    DECISION(segkey-identity)：身份 = (file, source)，故行携带 file；
+    feature/locator 仅用于 unmatched 日志展示。
+    """
+
+    __slots__ = ("file", "locator", "feature", "source", "target")
+
+    def __init__(self, file: str, locator: str, feature: str,
+                 source: str, target: str) -> None:
+        self.file = file
+        self.locator = locator
+        self.feature = feature
+        self.source = source
+        self.target = target
+
+
 class PytranApp:
     def __init__(
         self,
@@ -431,7 +449,8 @@ class PytranApp:
         raw = (str(raw) if raw is not None else "").strip()
         # 布尔字段：勾选框给的是 bool，转成 str 后 "False" 是真值字符串，
         # 直接 setattr 会让「关」变成「开」——必须先归一化。
-        if attr in ("review_enabled", "term_extract_use_ai", "enable_thinking"):
+        if attr in ("review_enabled", "term_extract_use_ai", "enable_thinking",
+                    "fallback_enable_thinking"):
             from pytran.config import _coerce_bool
             return _coerce_bool(raw, default=False)
         # 整数字段：0/负数会崩线程池或让循环永动，钳到 >=1
@@ -597,60 +616,38 @@ class PytranApp:
         return dst
 
     def _merge_import(self, segs: list, gf: list, files: list) -> None:
-        """合并导入（任务书 §3）：按稳定 uid 对位旧/新，保留旧译文。
+        """合并导入（任务书 v3.1 §2.3）：按段身份 (file, source) 对位旧/新。
 
-        DECISION(stable-uid, 用户裁决 2026-10-24）：uid 是唯一性主键，
-        合并导入**按 uid 对位**——不做任何原文/相似度猜测。
+        DECISION(segkey-identity, 2026-10-26)：六轮复盘证明 uid（无论
+        顺序号还是路径 hash）都不能充当跨导入身份。改用
+        ``pytran.identity.resolve_batch``——按 (完整文件路径, 原文) 精确
+        对位，无 uid 碰撞、无序号漂移、无跨文件串译；对不上就进
+        unmatched（遗留译文），**绝不猜**。
 
-        uid 由「文件路径 hash + 文件内序号」派生（pytran.uids.make_uid）：
-        同文件的同一条段在任何次导入得到同一 uid，因此旧译文直接落到
-        新工程的同名同位置段上；不同文件 hash 不同永不撞车。
-
-        * 旧工程已译/已审校行 → 按 uid 落到新工程同名段，保留 target、
-          置 REVIEWED（人工确认过的内容不被自动重译覆盖）；
-        * 新解析出的行（uid 无旧译文）→ PENDING；
-        * 旧 uid 在新工程不存在（原文结构变了/行被删）→ 记「遗留译文」日志。
-
-        2026-10-24 事故根因是 uid 分配不稳定（每次导入从 1 重编 → 新旧
-        uid 撞车 → 写回译文张冠李戴，15 文件全污染，已从 bak/game 快照
-        恢复）；分配稳定后 uid 匹配即安全。详见
-        docs/BUGFIX-merge-uid-collision.md。
+        * 旧工程已译/已审校行 → 身份命中的段保留 target、置 REVIEWED；
+        * 新解析出的行（无旧译文）→ PENDING；
+        * 旧译文身份在新工程不存在（原文被改/行被删/文件重命名）→
+          记「遗留译文」日志，交人工处理。
         """
         from pytran.project import build_project
-        from pytran.backfill import (
-            match_translations, TranslationRow, MatchOutcome,
-            SIMILARITY_THRESHOLD,
-        )
+        from pytran.identity import resolve_batch
 
         game_root = self.project.game_root
-        # 用新解析结果搭基线工程（uid 由稳定分配器重编——同文件同段
-        # 与旧工程 uid 一致）。
+        # 新工程基线；uid 降级为会话内序号（跨导入身份由 seg_key 承担）。
         new_project = build_project(segs, files=gf, game_root=str(game_root or ""),
                                     term_profile=self.project.term_profile)
         old_segs = self.project.segments
         rows = [
-            TranslationRow(
-                uid=s.uid,
-                feature=s.feature,
-                locator=s.locator,
-                source=s.source,
-                target=s.target,
-            )
+            _MergeRow(file=s.file, locator=s.locator, feature=s.feature,
+                      source=s.source, target=s.target)
             for s in old_segs
             if s.status in (SegmentStatus.TRANSLATED, SegmentStatus.REVIEWED)
             and s.target
             and s.target.strip()
         ]
 
-        def _on_warn(kind, row, seg):  # noqa: ANN001
-            self._log(f"合并导入：兜底命中 uid={seg.uid}（locator={row.locator}），请人工复核")
-
-        # uid 为主键精确对位；旧 uid 不在新工程（结构变化）时，特征码/
-        # 相似度兜底仅作提示，命中仍要求人工复核（on_warning）。
-        outcome: MatchOutcome = match_translations(
-            new_project.segments, rows,
-            similarity_threshold=SIMILARITY_THRESHOLD, on_warning=_on_warn
-        )
+        # 唯一出口：身份精确对位，无兜底链。
+        outcome = resolve_batch(new_project.segments, rows)
         keep_map = {m.segment.uid: m.row.target for m in outcome.matches}
         for seg in new_project.segments:
             if seg.uid in keep_map:
@@ -664,13 +661,10 @@ class PytranApp:
         JsonProjectStore().save(self.project, self.work_dir)
 
         merged = len(outcome.matches)
-        by_uid_hits = sum(1 for m in outcome.matches if m.method == "uid")
-        fallback_hits = merged - by_uid_hits
         legacy = len(outcome.unmatched)
         self._log(
-            f"合并导入完成：新解析 {len(segs)} 段，按 uid 对位回填 {by_uid_hits} 行"
-            f"、兜底命中 {fallback_hits} 行、{legacy} 行旧译文未匹配"
-            f"（见下方「遗留译文」）"
+            f"合并导入完成：新解析 {len(segs)} 段，按身份对位回填 {merged} 行、"
+            f"{legacy} 行旧译文未匹配（见下方「遗留译文」）"
         )
         for row in outcome.unmatched:
             self._log(
@@ -678,7 +672,153 @@ class PytranApp:
                 f"locator={row.locator!r} target={row.target!r}"
             )
         self._log("已自动激活「翻译」阶段，合并后的未译行可继续翻译")
+        # P6 复核视图：unmatched 行与疑似候选并排展示，人工一键确认
+        # （判定仍精确，猜测交给人——任务书 v3.1 §2.1 目标 7）
+        if legacy:
+            self._show_unmatched_review(outcome.unmatched, "合并导入")
         self._refresh_all()
+
+    def _show_unmatched_review(self, unmatched_rows: list, source_label: str) -> None:
+        """P6 复核视图（任务书 v3.1 §2.1 目标 7）：unmatched 行人工确认。
+
+        设计原则：相似度**只用于展示排序**（帮人找疑似候选），绝不参与
+        自动判定——自动对位已由 identity.resolve_batch 精确完成，这里
+        处理的是"对不上的行"。人工确认的写入仍走熔断体系（写回前校验）。
+
+        * 每行展示：row 的 locator/source/target + 同文件内相似度最高的
+          候选段（≤3 个，供人工比对）；
+        * 「确认写入」：把 row.target 写入人工指定的段（下拉选择），
+          置 REVIEWED 并保存工程；
+        * 「跳过」：不入库，仅记日志（下次导入仍会出现在遗留译文中）。
+        """
+        if not unmatched_rows:
+            return
+        try:
+            from PyQt6.QtWidgets import (
+                QApplication,
+                QDialog, QVBoxLayout, QHBoxLayout, QTableWidget,
+                QTableWidgetItem, QPushButton, QLabel, QHeaderView,
+                QComboBox, QMessageBox,
+            )
+            from PyQt6.QtCore import Qt
+        except ImportError:  # pragma: no cover - 无 GUI 环境（CLI）
+            return
+        # 无 QApplication（monkeypatch 测试 / 无头环境）时 Qt 组件创建会
+        # fastfail 崩溃（0xC0000409）。此时退化为纯日志模式——unmatched
+        # 信息的可见性由 _merge_import 的「遗留译文」日志保证，不丢失。
+        if QApplication.instance() is None:
+            for row in unmatched_rows:
+                logger.warning(
+                    "复核视图不可用（无 QApplication），遗留译文仅记日志："
+                    "source=%r target=%r", (row.source or "")[:60],
+                    (row.target or "")[:40])
+            return
+
+        # 相似候选预计算（展示用，绝不自动写入）
+        import difflib
+
+        def _candidates(row, limit: int = 3):
+            row_src = (row.source or "").strip()
+            if not row_src:
+                return []
+            row_file = row.file if hasattr(row, "file") else ""
+            scored = []
+            for seg in self.project.segments:
+                if row_file and seg.file != row_file:
+                    continue
+                ratio = difflib.SequenceMatcher(
+                    None, row_src, (seg.source or "").strip()).ratio()
+                if ratio >= 0.60:
+                    scored.append((ratio, seg))
+            scored.sort(key=lambda t: -t[0])
+            return [s for _r, s in scored[:limit]]
+
+        dlg = QDialog(self._window)
+        dlg.setWindowTitle(f"{source_label}：未匹配译文复核（{len(unmatched_rows)} 条）")
+        dlg.resize(980, 560)
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(QLabel(
+            "以下旧译文无法按身份（文件+原文）自动对位——常见原因：原文被人工修改、"
+            "行被删除、文件重命名。\n"
+            "右侧列出同文件内最相似的候选段（仅供比对）。确认无误后选择目标段写入；"
+            "不确定的条目保持「跳过」，下不为例——宁缺毋错。"))
+
+        table = QTableWidget(0, 5)
+        table.setHorizontalHeaderLabels(
+            ["原文（旧）", "旧译文", "疑似候选段（相似度排序）", "写入目标", "操作"])
+        table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(table)
+
+        # 段下拉框选项：(显示文本, Segment 或 None)
+        combo_map: list[list[tuple[str, object]]] = []
+
+        for row in unmatched_rows:
+            r = table.rowCount()
+            table.insertRow(r)
+            it_src = QTableWidgetItem((row.source or "")[:120])
+            it_src.setFlags(it_src.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            table.setItem(r, 0, it_src)
+            it_tgt = QTableWidgetItem((row.target or "")[:120])
+            it_tgt.setFlags(it_tgt.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            table.setItem(r, 1, it_tgt)
+            cands = _candidates(row)
+            cand_text = "\n".join(
+                f"{(c.source or '')[:60]}  [{c.file.rsplit('/', 1)[-1]}]"
+                for c in cands) or "（无相似候选）"
+            it_cand = QTableWidgetItem(cand_text)
+            it_cand.setFlags(it_cand.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            table.setItem(r, 2, it_cand)
+
+            combo = QComboBox()
+            options: list[tuple[str, object]] = [("跳过（不写入）", None)]
+            for c in cands:
+                options.append(
+                    (f"{(c.source or '')[:50]} @ {c.file.rsplit('/', 1)[-1]}", c))
+            combo_map.append(options)
+            for text, _ in options:
+                combo.addItem(text)
+            table.setCellWidget(r, 3, combo)
+
+            btn = QPushButton("写入")
+            btn.clicked.connect(
+                lambda _=False, r=r, row=row: self._apply_unmatched_row(
+                    table, combo_map, r, row, dlg, source_label))
+            table.setCellWidget(r, 4, btn)
+
+        bar = QHBoxLayout()
+        bar.addStretch(1)
+        btn_close = QPushButton("关闭")
+        btn_close.clicked.connect(dlg.accept)
+        bar.addWidget(btn_close)
+        layout.addLayout(bar)
+        dlg.exec()
+
+    def _apply_unmatched_row(self, table, combo_map, r, row, dlg, source_label) -> None:
+        """复核视图「写入」：把旧译文写入人工选定的段。
+
+        人工显式裁定不违背"不猜"原则——人就是最后的匹配器。写入的段
+        置 REVIEWED（等同人工审校过的语义）并立即保存工程。
+        """
+        options = combo_map[r]
+        combo = table.cellWidget(r, 3)
+        seg = options[combo.currentIndex()][1]
+        if seg is None:
+            return  # 「跳过」：不入库，保留在下次导入的遗留译文中
+        seg.target = row.target
+        seg.status = SegmentStatus.REVIEWED
+        JsonProjectStore().save(self.project, self.work_dir)
+        self._log(
+            f"{source_label}复核：人工确认写入 uid={seg.uid} "
+            f"（{seg.file}，原文={(seg.source or '')[:40]!r}）"
+        )
+        self._invalidate_seg_index()
+        self._refresh_all()
+        table.removeRow(r)
 
     def _reset_import(self, segs: list, gf: list, game_root: str) -> None:
         """清空重导（任务书 §4）：先备份再全新导入，丢弃全部旧译文。"""
@@ -1670,9 +1810,29 @@ class PytranApp:
             "本开关只作用于翻译请求，不影响全文复核。"
         )
         cb_thinking.setObjectName("cb_enable_thinking")
+        # FEATURE(fallback-thinking) 2026-10-25：回退模型专用思维链开关。
+        # 与主模型开关互相独立——用户要求「给回退模型设置思维链开关」。
+        cb_fb_thinking = QCheckBox("回退模型允许思维链（独立于主模型）")
+        cb_fb_thinking.setChecked(
+            bool(getattr(cfg, "fallback_enable_thinking", True)))
+        cb_fb_thinking.setToolTip(
+            "控制**回退模型**是否允许输出推理链，与主模型的开关互相独立。\n"
+            "勾选：回退请求不带 enable_thinking 参数（默认，与改造前一致）。\n"
+            "取消：回退请求带 enable_thinking=false，抑制推理链、更快更省。\n\n"
+            "什么时候该关：回退模型常是纯推理模型（如 DeepSeek-R1），"
+            "推理链会让单批耗时和 token 大幅上升；主模型已连续失败时，"
+            "回退阶段更该求稳求快。\n"
+            "注意：该开关只在真的切到回退模型时生效——"
+            "未配置回退模型或未触发切换时，仍用主模型的开关。"
+        )
+        cb_fb_thinking.setObjectName("cb_fallback_enable_thinking")
         _thinking_inserted = False
+        _fb_thinking_inserted = False
         for label, attr, secret in fields:
-            e = QLineEdit(str(getattr(cfg, attr, "") or ""))
+            # 注意：不能用 `or ""`——fallback_after_failures 的 0 是合法值
+            # （=不回退），`0 or ""` 会渲染成空白，用户看不出「已设为不回退」。
+            _val = getattr(cfg, attr, "")
+            e = QLineEdit("" if _val is None else str(_val))
             if secret:
                 e.setEchoMode(QLineEdit.EchoMode.Password)
             form.addRow(label, e)
@@ -1681,8 +1841,14 @@ class PytranApp:
             if attr == "model":
                 form.addRow(cb_thinking)
                 _thinking_inserted = True
+            # 回退模型开关紧跟「失败几次后切回退模型」下方，与回退相关项聚在一起。
+            if attr == "fallback_after_failures":
+                form.addRow(cb_fb_thinking)
+                _fb_thinking_inserted = True
         if not _thinking_inserted:  # pragma: no cover - 防御：字段表被改坏时兜底
             form.addRow(cb_thinking)
+        if not _fb_thinking_inserted:  # pragma: no cover - 同上
+            form.addRow(cb_fb_thinking)
         # 复核开关用勾选框：布尔语义不能走 QLineEdit——「False」字符串是真值，
         # 直接 setattr 会把「关」写回成「开」（见 _coerce_setting 的 bool 分支）。
         cb_review = QCheckBox("翻译完成后做全文复核（原文/译文逐行对照确认）")
@@ -1919,6 +2085,8 @@ class PytranApp:
             values["review_enabled"] = cb_review.isChecked()
             # FEATURE(enable-thinking)：思维链开关同样是布尔，走同一收敛路径。
             values["enable_thinking"] = cb_thinking.isChecked()
+            # FEATURE(fallback-thinking)：回退模型的思维链开关，独立字段。
+            values["fallback_enable_thinking"] = cb_fb_thinking.isChecked()
             self._apply_settings(values)
 
             # 术语表：复用 terms.py 的纯逻辑（rows_to_terms 负责「空译名 +
@@ -2139,7 +2307,7 @@ class PytranApp:
             QMessageBox.warning(self._window, "导出失败", str(exc))
 
     def _on_import_csv(self) -> None:
-        """回灌人工修改后的 CSV（§6.4，按 uid 匹配）。"""
+        """回灌人工修改后的 CSV（§6.4，按段身份 file+source 对位）。"""
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
         try:
             if self.deps is None:
@@ -3095,6 +3263,63 @@ class PytranApp:
         if self.deps is None:
             self.deps = self._build_default_deps()
         journal = getattr(self.deps, "journal", None)
+
+        # §6.3 导出熔断：写回前必须先过熔断，不能直接写游戏目录。
+        # 2026-10-25 事故：strings 块跨文件错位（dlc.rpy 的译文写进
+        # exp-1-3somes.rpy）已经让 14 条 target 的标签/插值与 source 不符，
+        # 熔断本可拦下，但写回入口直接调 write_back_project 绕过了熔断，
+        # 错译文照样落盘。这里改为「先熔断 → 明细给用户 → 明确确认后才强制写回」。
+        from .backfill import evaluate_export_fuse
+
+        fuse = evaluate_export_fuse(self.project)
+        if fuse:
+            detail_lines = []
+            label_map = {
+                "untranslated": "未翻译",
+                "failed": "失败",
+                "tag_check": "标签/插值与原文不符",
+                "match_rate": "匹配率不足",
+            }
+            for key, items in fuse.items():
+                detail_lines.append(
+                    f"· {label_map.get(key, key)}：{len(items)} 条")
+            shown = 12
+            sample = []
+            for key, items in fuse.items():
+                if key == "tag_check":
+                    by_uid = {s.uid: s for s in self.project.segments}
+                    for tag in items[:shown]:
+                        try:
+                            uid = int(tag.split("=", 1)[1])
+                        except (IndexError, ValueError):
+                            continue
+                        seg = by_uid.get(uid)
+                        if seg is None:
+                            continue
+                        sample.append(
+                            f"  [{uid}] 原文：{seg.source[:40]}\n"
+                            f"        译文：{(seg.target or '')[:40]}")
+                    break
+            msg = (
+                "写回前熔断检查未通过：\n\n"
+                + "\n".join(detail_lines)
+                + ("\n\n疑似错位样例（原文/译文明显不对应）：\n" + "\n".join(sample)
+                   if sample else "")
+                + "\n\n强写会把错译文落进游戏目录。建议先回「审校」修正。\n"
+                  "仍要强制写回吗？"
+            )
+            self._log("写回前熔断未通过：" + "；".join(detail_lines))
+            from PyQt6.QtWidgets import QMessageBox
+            ans = QMessageBox.question(
+                self._window, "写回前熔断",
+                msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                self._log("已取消写回（熔断未通过，用户未强制）")
+                return
+
         try:
             self.deps.exporter.write_back_project(self.project, self.work_dir, journal)
             # 写回成功：把本次写回的文件并入「已翻译」集合（累计，不覆盖历史），

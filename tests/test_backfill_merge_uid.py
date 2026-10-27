@@ -24,13 +24,14 @@ def _seg(uid: int, file: str, feature: str, source: str) -> Segment:
 
 
 def test_uid_matching_enabled_by_default() -> None:
-    """uid 是唯一主键——默认按 uid 精确匹配（分配稳定后安全）。"""
+    """v3.1：身份对位（文件+原文）成为唯一匹配语义，uid 参数被忽略。
+    原「uid 唯一主键」语义已随复盘证伪退役。"""
     segs = [_seg(10, "say", "a.rpy:5", "hello")]
     rows = [TranslationRow(uid=10, feature="other", locator="zzz",
-                           source="x", target="你好")]
+                           source="hello", target="你好")]
     out = match_translations(segs, rows)
     assert len(out.matches) == 1
-    assert out.matches[0].method == "uid"
+    assert out.matches[0].method == "identity"
 
 
 def test_uid_collision_prevented_by_stable_allocation() -> None:
@@ -52,17 +53,17 @@ def test_uid_collision_prevented_by_stable_allocation() -> None:
 
 
 def test_uid_matching_can_be_disabled_for_untrusted_source() -> None:
-    """uid 不可信来源（外部 CSV 乱序 uid）可显式关闭，退特征码兜底。"""
+    """v3.1：身份对位天然不依赖 uid，"关闭 uid"开关被忽略，行为等同。"""
     segs = [_seg(10, "say", "say", "hello")]
     rows = [TranslationRow(uid=999, feature="say", locator="# game/say:5",
                            source="hello", target="你好")]
     out = match_translations(segs, rows, use_uid_matching=False)
     assert len(out.matches) == 1
-    assert out.matches[0].method == "feature"
+    assert out.matches[0].method == "identity"
 
 
 def test_feature_matching_still_works() -> None:
-    """特征码（label）匹配不受影响。"""
+    """v3.1：特征码不参与匹配；同文件同原文仍按身份命中。"""
     segs = [_seg(99, "a.rpy", "translate chinese start_the_game_2544aaf2:",
                  "Your heart begins to race...")]
     rows = [TranslationRow(
@@ -72,7 +73,7 @@ def test_feature_matching_still_works() -> None:
         target="你的心开始加速……")]
     out = match_translations(segs, rows)
     assert len(out.matches) == 1
-    assert out.matches[0].method == "feature"
+    assert out.matches[0].method == "identity"
 
 
 def test_same_source_different_file_no_cross_match() -> None:

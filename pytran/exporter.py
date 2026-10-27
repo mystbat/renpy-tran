@@ -33,12 +33,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
-from .backfill import evaluate_export_fuse, match_translations
+from .backfill import evaluate_export_fuse
 from .config import TermProfile
 from .interfaces import Exporter, ExportBlocked
 from .models import Project, Segment, SegmentStatus
 
 CSV_COLUMNS = ["uid", "定位符", "特征码", "角色名", "原文", "译文"]
+# DECISION(segkey-identity)：新增 key 列（段身份），CSV 往返以 key 为主键；
+# uid 列保留一个版本期仅作旧文件迁移参考。
+CSV_COLUMNS_V2 = ["key", "uid", "定位符", "特征码", "角色名", "原文", "译文"]
 CSV_DELIMITER = "|"
 CSV_FILE_NAME = "translation.csv"
 BULK_SNAPSHOT_SUBDIR = "logs"
@@ -52,11 +55,14 @@ def _now_ts() -> str:
 # CSV 编解码（纯函数，便于测试）
 # --------------------------------------------------------------------------- #
 def project_to_csv_rows(project: Project) -> list[list[str]]:
-    """把工程片段序列化为 §6.4 的 6 列行（含表头）。"""
-    rows: list[list[str]] = [list(CSV_COLUMNS)]
+    """把工程片段序列化为 CSV 行（含表头，v2 带 key 列）。"""
+    from .identity import segment_key
+
+    rows: list[list[str]] = [list(CSV_COLUMNS_V2)]
     for seg in project.segments:
         rows.append(
             [
+                segment_key(seg.file, seg.source),
                 str(seg.uid),
                 seg.locator,
                 seg.feature,
@@ -68,30 +74,61 @@ def project_to_csv_rows(project: Project) -> list[list[str]]:
     return rows
 
 
-def rows_to_project_map(rows: list[list[str]]) -> dict[int, dict[str, str]]:
-    """把 CSV 行解析成 ``{uid: {列名: 值}}``（仅保留可解析的 int uid）。
+class _CsvRow:
+    """CSV 行 → duck-type identity.resolve_batch 所需字段。"""
 
-    兼容「首行是表头」或「无表头纯数据」两种 CSV：首格为 ``uid`` 视为表头。
+    __slots__ = ("file", "locator", "feature", "source", "target")
+
+    def __init__(self, file: str, locator: str, feature: str,
+                 source: str, target: str) -> None:
+        self.file = file
+        self.locator = locator
+        self.feature = feature
+        self.source = source
+        self.target = target
+
+
+def rows_to_project_map(rows: list[list[str]]) -> dict[str, dict[str, str]]:
+    """把 CSV 行解析成 ``{key: {列名: 值}}``。
+
+    兼容三种格式：v2 表头（key 列）、v1 表头（uid 列）、无表头纯数据。
+    v1 旧格式无 key 列，用定位符反推 file 与原文拼 key。
     """
+    from .identity import segment_key
+    from .backfill import locator_file
+
     if not rows:
         return {}
-    has_header = rows[0] and str(rows[0][0]).strip() == "uid"
+    first = rows[0]
+    has_header = first and str(first[0]).strip() in ("uid", "key")
     data_rows = rows[1:] if has_header else rows
-    out: dict[int, dict[str, str]] = {}
+    v2 = has_header and str(first[0]).strip() == "key"
+    out: dict[str, dict[str, str]] = {}
     for raw in data_rows:
-        if len(raw) < 6:
-            continue
-        try:
-            uid = int(str(raw[0]).strip())
-        except (ValueError, TypeError):
-            continue
-        out[uid] = {
-            "locator": raw[1],
-            "feature": raw[2],
-            "role": raw[3],
-            "source": raw[4],
-            "target": raw[5],
-        }
+        if v2:
+            if len(raw) < 7:
+                continue
+            out[str(raw[0]).strip()] = {
+                "uid": raw[1],
+                "locator": raw[2],
+                "feature": raw[3],
+                "role": raw[4],
+                "source": raw[5],
+                "target": raw[6],
+            }
+        else:
+            # v1 旧格式：按 (定位符文件, 原文) 重建 key
+            if len(raw) < 6:
+                continue
+            f = locator_file(raw[1])
+            out[segment_key(f, raw[4])] = {
+                "uid": raw[0],
+                "locator": raw[1],
+                "feature": raw[2],
+                "role": raw[3],
+                "source": raw[4],
+                "target": raw[5],
+            }
     return out
 
 
@@ -124,40 +161,49 @@ class ExporterImpl(Exporter):
         csv_path,  # type: ignore[override]
         profile: TermProfile,
     ) -> tuple[int, int]:
+        """CSV 回灌（任务书 v3.1 §2.3）：按段身份 (file, source) 对位。
+
+        DECISION(segkey-identity, 2026-10-26)：uid 是导出时的会话内快照，
+        跨导入无语义（复盘缺陷 #10）。v2 CSV 携带 key 列精确对位；v1 旧
+        格式按 (定位符文件, 原文) 重建 key。对不上即 unmatched——绝不猜。
+        """
+        from .identity import segment_key, resolve_batch, _KEY_SEP
+
         csv_path = Path(csv_path)
         with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
             reader = csv.reader(f, delimiter=CSV_DELIMITER)
             rows = list(reader)
         incoming = rows_to_project_map(rows)
 
-        by_uid = {seg.uid: seg for seg in project.segments}
-        matched_uids = set(incoming) & set(by_uid)
+        # 按工程段的 key 建 index；同 key 多段（重复原文桶）按 CSV 行序
+        # FIFO 对位——与 identity.resolve_batch 语义一致。
+        by_key: dict[str, list[Segment]] = {}
+        for seg in project.segments:
+            by_key.setdefault(segment_key(seg.file, seg.source), []).append(seg)
+
+        ordered_rows: list[_CsvRow] = []
+        for key, rec in incoming.items():
+            parts = key.split(_KEY_SEP, 2)
+            file = parts[1] if len(parts) == 3 else ""
+            ordered_rows.append(_CsvRow(
+                file=file,
+                locator=rec["locator"], feature=rec["feature"],
+                source=rec["source"], target=rec["target"],
+            ))
+
+        outcome = resolve_batch(project.segments, ordered_rows)
         updated = 0
-        for uid in matched_uids:
-            seg = by_uid[uid]
-            seg.target = incoming[uid]["target"]
+        for m in outcome.matches:
+            seg = m.segment
+            seg.target = m.row.target
             _apply_imported_status(seg, profile)
             updated += 1
-
-        # §6.2 兜底链：未命中 uid 的 CSV 行按相似度匹配（绝不静默全量覆盖）
-        unmatched_rows = [
-            _TranslationRow(uid, incoming[uid]["feature"], incoming[uid]["locator"],
-                            incoming[uid]["source"], incoming[uid]["target"])
-            for uid in incoming
-            if uid not in matched_uids
-        ]
-        unmatched = len(unmatched_rows)
-        if unmatched_rows:
-            pool = [s for s in project.segments if s.uid not in matched_uids]
-            outcome = match_translations(
-                pool, unmatched_rows, similarity_threshold=0.92, on_warning=lambda *_: None
+        unmatched = len(outcome.unmatched)
+        for row in outcome.unmatched:
+            logger.warning(
+                "§6.4 CSV 行未匹配（key=%r source=%r target=%r），交人工处理",
+                row.locator, (row.source or "")[:60], (row.target or "")[:40],
             )
-            for m in outcome.matches:
-                seg = m.segment
-                seg.target = m.row.target
-                _apply_imported_status(seg, profile)
-                updated += 1
-            unmatched = len(outcome.unmatched)
 
         return updated, unmatched
 
@@ -345,20 +391,6 @@ def _latest_snapshot(work_dir: Path) -> Optional[Path]:
         if not p.name.endswith(".undone")
     )
     return cands[-1] if cands else None
-
-
-# --------------------------------------------------------------------------- #
-# 内部轻量行（兼容 backfill.TranslationRow 字段）
-# --------------------------------------------------------------------------- #
-class _TranslationRow:
-    __slots__ = ("uid", "feature", "locator", "source", "target")
-
-    def __init__(self, uid, feature, locator, source, target):
-        self.uid = uid
-        self.feature = feature
-        self.locator = locator
-        self.source = source
-        self.target = target
 
 
 def _apply_imported_status(seg: Segment, profile: TermProfile) -> None:

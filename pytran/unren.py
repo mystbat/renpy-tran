@@ -472,6 +472,11 @@ def _builtin_skeleton(game_root: Path, language: str) -> List[Path]:
             continue
         body: List[str] = []
         for s in translatable:
+            # DECISION(segkey-identity, v3.1)：标签内的 s.uid 是
+            # parse_file 的**文件局部序号**。骨架文件自洽：重导同一骨架
+            # 文件时 parse_file 同样从 1 起计数，标签可再现。uid 不再有
+            # 跨导入语义——骨架对位实际靠 old/new 原文（translate 块结构），
+            # 序号仅保证标签在该文件内唯一。
             label = f"{rpy.stem}_{s.uid}"
             body.append(f"translate {language} {label}:")
             if s.kind == "strings":

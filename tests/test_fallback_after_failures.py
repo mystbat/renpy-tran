@@ -173,3 +173,35 @@ def test_missing_key_defaults_to_zero(tmp_path):
     (tmp_path / "config.ini").write_text(
         "[Model]\nmodel = m1\n", encoding="utf-8")
     assert Config.load(tmp_path).fallback_after_failures == 0
+
+
+# --------------------------------------------------------------------------- #
+# 设置页渲染：0 必须显示成 "0"，不能是空白
+# --------------------------------------------------------------------------- #
+def test_settings_field_shows_zero_not_blank(tmp_path):
+    """回归保护：`getattr(...) or ""` 会把整数 0 变成空白，
+    用户看到空框会误以为「未配置」，实际是「不回退」。必须显示 "0"。"""
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication, QDialog, QFormLayout
+    import pytran.ui as ui
+    from pytran.models import Project
+
+    app = QApplication.instance() or QApplication([])
+    orig_app_exec, orig_dlg_exec = QApplication.exec, QDialog.exec
+    QApplication.exec = lambda self: 0
+    QDialog.exec = lambda self: 0
+    try:
+        g = ui.PytranApp(Project(segments=[]), work_dir=str(tmp_path))
+        g._open_settings()
+        form = g._settings_dialog.findChild(QFormLayout)
+        found = None
+        for r in range(form.rowCount()):
+            lb = form.itemAt(r, QFormLayout.ItemRole.LabelRole)
+            fw = form.itemAt(r, QFormLayout.ItemRole.FieldRole)
+            if lb and lb.widget() and "切回退模型" in lb.widget().text():
+                found = fw.widget().text() if fw and fw.widget() else None
+                break
+        assert found == "0", f"默认应显示 '0'（不回退），实际 {found!r}"
+    finally:
+        QApplication.exec, QDialog.exec = orig_app_exec, orig_dlg_exec

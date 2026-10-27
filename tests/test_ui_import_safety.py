@@ -26,6 +26,19 @@ from pytran.project import JsonProjectStore
 from pytran.ui import PytranApp
 
 
+def _source_for(feature: str) -> str:
+    """按 feature 推导该块的原文，供 ``_seg`` 与 ``_write_rpy`` 共用。
+
+    DECISION(fixture-source-consistency, 2026-10-25)：合并导入的匹配依据是
+    「uid + 原文」，所以测试夹具里**旧工程段的原文必须与新解析出的原文
+    一致**，否则模拟的就不是「同一段被重新导入」而是「这一段被改写成了
+    另一句话」——那本来就该判不匹配。早先 ``_seg`` 用 ``source=f"src {uid}"``
+    而 ``_write_rpy`` 写的是固定一句话，两者矛盾，用例靠旧的「同 feature
+    即继承」宽松语义才通过。
+    """
+    return f"source line for {feature}"
+
+
 def _seg(uid: int, feature: str, *, status: SegmentStatus = SegmentStatus.PENDING,
          target: str = "") -> Segment:
     return Segment(
@@ -36,18 +49,21 @@ def _seg(uid: int, feature: str, *, status: SegmentStatus = SegmentStatus.PENDIN
         kind="dialogue",
         comment="",
         role="",
-        source=f"src {uid}",
+        source=_source_for(feature),
         target=target or None,
         status=status,
     )
 
 
 def _write_rpy(path: Path, features: list[str]) -> None:
-    """写出一份可被 RenpyParser 解析的 .rpy（每个 feature 一个 dialogue 块）。"""
+    """写出一份可被 RenpyParser 解析的 .rpy（每个 feature 一个 dialogue 块）。
+
+    原文由 ``_source_for`` 生成，与 ``_seg`` 保持一致。
+    """
     lines: list[str] = []
     for f in features:
         lines.append(f)
-        lines.append('    "source line for pytran import-safety test."')
+        lines.append(f'    "{_source_for(f)}"')
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
 

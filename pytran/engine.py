@@ -22,7 +22,7 @@ from typing import Any, Callable, Optional
 
 from pytran.config import Config, TermProfile
 from pytran.interfaces import (
-    Detection, EventCallback, KeepDeclared, Provider, Uid,
+    Detection, EventCallback, KeepDeclared, ProtocolError, Provider, Uid,
     Validator,
 )
 from pytran.models import Project, Segment, SegmentStatus
@@ -45,6 +45,61 @@ FALLBACK_MIN_ROUNDS = 2
 REASON_ROUND_BUDGET = "round_budget"
 REASON_MODEL_FIXED_POINT = "model_fixed_point"
 REASON_KEEP_DECLATE_RATE = "keep_declare_rate_exceeded"
+
+# FEATURE(status-hint) 2026-10-26：块级调用失败必须在底部状态栏可见。
+# 用户实测：429（或超时/协议不可解析）时服务器没有正确回复，界面只在进度条上
+# 走一格，随后整块行静默变红，看不出发生了什么。
+# 原因：_translate_round 用 logger.exception 吞掉 ProviderError/ProtocolError，
+# 而本工程所有模块只取 logging.getLogger(__name__)，没有任何 handler，
+# 因此 logger.warning/exception 永远不会出现在 UI 上。
+# 对策：把异常归类成一句人话，经 on_event("log", {"level": "warn"}) 外发。
+# 注意：**只加提示**，不改行级 reason（仍为 "missing"），以免扰动
+# _state_key 的哈希（uid:target:error），进而影响 STUCK 判定与回退切换。
+_HINT_MAX_CAUSE_CHARS = 120
+
+
+def _failure_hint(exc: BaseException) -> str:
+    """把块级调用异常归类成一句用户能看懂的原因。
+
+    既看异常类型名，也看异常链（provider 会把 SDK 异常包成 ProviderError，
+    原始 ``RateLimitError``/``APITimeoutError`` 只留在 ``__cause__`` 和消息里），
+    还看 ``status_code`` 属性。
+    """
+    names: list[str] = []
+    texts: list[str] = []
+    codes: list[int] = []
+    cur: Optional[BaseException] = exc
+    hops = 0
+    while cur is not None and hops < 5:
+        names.append(type(cur).__name__)
+        texts.append(str(cur))
+        code = getattr(cur, "status_code", None)
+        if isinstance(code, int):
+            codes.append(code)
+        cur = cur.__cause__ or cur.__context__
+        hops += 1
+    joined = " ".join(names + texts).lower()
+
+    if isinstance(exc, ProtocolError) or "protocolerror" in joined:
+        return "服务器回复无法解析（协议错误）"
+    if 429 in codes or any(
+        k in joined
+        for k in ("ratelimit", "rate_limit", "429", "50602", "tpm limit")
+    ):
+        return "请求被限流（429 / TPM 超限），服务器未正常回复"
+    if 401 in codes or 403 in codes or "authentication" in joined:
+        return "API Key 无效或无权限（401/403），服务器拒绝回复"
+    if any(k in joined for k in ("timeout", "timed out", "readtimeout")):
+        return "请求超时，服务器未在规定时间内回复"
+    if any(k in joined for k in ("connection", "connect error", "network", "dns")):
+        return "网络连接失败，服务器未回复"
+    if any(500 <= c <= 599 for c in codes) or "internalserver" in joined:
+        return "服务器内部错误（5xx），未返回有效回复"
+    detail = (texts[0] if texts else "").strip().replace("\n", " ")
+    if len(detail) > _HINT_MAX_CAUSE_CHARS:
+        detail = detail[:_HINT_MAX_CAUSE_CHARS] + "…"
+    suffix = f"：{detail}" if detail else ""
+    return f"调用失败（{type(exc).__name__}）{suffix}"
 
 
 class TranslationEngine:
@@ -182,6 +237,16 @@ class TranslationEngine:
             if fallback_switched_round:
                 effective_cap = max(cap, fallback_switched_round + FALLBACK_MIN_ROUNDS)
             if round_no > effective_cap:
+                # FEATURE(status-hint)：终止原因也要在底部状态栏留痕，
+                # 否则用户只看到一片红行、不知是预算用尽还是服务器一直没回复。
+                on_event("log", {
+                    "message": (
+                        f"轮次预算用尽（{effective_cap} 轮），仍有 {len(queue)} 行未译出；"
+                        "具体失败原因见上面的块级提示"
+                    ),
+                    "level": "warn",
+                    "round": round_no,
+                })
                 self._force_fail(seg_map, queue, REASON_ROUND_BUDGET, on_event)
                 self._atomic_save(project, config)
                 break
@@ -337,6 +402,13 @@ class TranslationEngine:
     ) -> tuple[int, list[Uid]]:
         """并发翻译当前队列，返回 (发送行数, 本轮申报 uid 列表)。"""
         chunks = segmenter.chunk(project.segments)
+
+        # FEATURE(progress-hint)：把进度回调传给 provider，让 GUI 在
+        # 请求/退避期间能看到状态（用户实测：思维链模型 178s 无反馈）。
+        if on_event is not None:
+            def _provider_progress(msg: str) -> None:
+                on_event("log", {"message": msg})
+            self.provider._on_progress = _provider_progress
         # 仅发送队列内的行；context 取自完整段序（§4.1），provider 接受 (src,dst) 2-元组
         tasks: list[tuple[list[tuple[Uid, str]], list[tuple[str, str]]]] = []
         for chunk in chunks:
@@ -346,6 +418,12 @@ class TranslationEngine:
 
         sent = 0
         declared_uids: list[Uid] = []
+        # FEATURE(status-hint)：按「原因」去重收集本轮的块级失败。
+        # 一个 2000 行的文件按 block_lines=20 切是 100 块；若服务器全程 429，
+        # 每块都往状态栏写一条会把其它信息挤掉（日志面板虽有行数上限，
+        # 但刷屏本身就让用户看不到重点）。故同一原因只在首次出现时写详情，
+        # 轮末再补一条汇总。
+        failed_chunks: dict[str, list[tuple[int, int, int, int]]] = {}
         if not tasks:
             return 0, declared_uids
 
@@ -368,9 +446,26 @@ class TranslationEngine:
                 done_count += 1
                 try:
                     result = fut.result()
-                except Exception:  # 网络层耗尽 / 协议不可解析（ProviderError/ProtocolError）
+                except Exception as exc:  # 网络层耗尽 / 协议不可解析（ProviderError/ProtocolError）
                     logger.exception("translate_batch raised; marking requested rows missing")
                     result = {}
+                    # FEATURE(status-hint)：块级失败必须在底部状态栏可见，
+                    # 否则用户只看到「进度走一格 + 一批行变红」，不知是 429/超时/协议错。
+                    first_uid, last_uid = lines[0][0], lines[-1][0]
+                    hint = _failure_hint(exc)
+                    seen = failed_chunks.setdefault(hint, [])
+                    seen.append((done_count, first_uid, last_uid, len(lines)))
+                    if len(seen) == 1:  # 同一原因只详述一次，避免刷屏
+                        on_event("log", {
+                            "message": (
+                                f"第 {done_count}/{len(futures)} 块失败：{hint}"
+                                f"（行 {first_uid}..{last_uid} 共 {len(lines)} 行已记为失败）"
+                            ),
+                            "level": "warn",
+                            "reason": hint,
+                            "uid_first": first_uid,
+                            "uid_last": last_uid,
+                        })
                 on_event("chunk_done",
                          {"done": done_count, "total": len(futures),
                           "rows": len(lines)})
@@ -379,6 +474,23 @@ class TranslationEngine:
                         seg_map, profile, lines, result, allow_keep_declare, on_event,
                     )
                 )
+        # FEATURE(status-hint)：本轮多块失败时补一条汇总。
+        # 只有 1 块失败时不重复——上面那条详情已经把原因说清楚了。
+        total_chunks = sum(len(hits) for hits in failed_chunks.values())
+        if total_chunks > 1:
+            parts = []
+            total_rows = 0
+            for hint, hits in failed_chunks.items():
+                parts.append(f"{hint}（{len(hits)} 块）")
+                total_rows += sum(h[3] for h in hits)
+            on_event("log", {
+                "message": (
+                    f"本轮共 {total_chunks} 个块（{total_rows} 行）未拿到有效回复："
+                    + "；".join(parts)
+                ),
+                "level": "warn",
+                "reason": "chunk_failures_summary",
+            })
         return sent, declared_uids
 
     # -- 结果应用 -------------------------------------------------------------

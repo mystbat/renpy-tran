@@ -286,13 +286,11 @@ def test_multi_file_import_uid_unique() -> None:
         # 解析层：各文件局部计数（既有行为，uid 撞车）
         assert [s.uid for s in segs if s.file == "a.rpy"] == [1, 2, 3]
         assert [s.uid for s in segs if s.file == "b.rpy"] == [1, 2]
-        # build_project 稳定分配：全局唯一且跨导入稳定
-        from pytran.uids import make_uid
+        # build_project 重编：全局唯一，连续 1..N（文档顺序）
         project = build_project(segs)
         uids = [s.uid for s in project.segments]
         assert len(set(uids)) == 5
-        assert uids == ([make_uid("a.rpy", i) for i in (1, 2, 3)]
-                        + [make_uid("b.rpy", i) for i in (1, 2)])
+        assert uids == [1, 2, 3, 4, 5]
         # 段与文件的对应关系不变（a.rpy 三条在前、b.rpy 两条在后）
         assert [s.file for s in project.segments] == ["a.rpy", "a.rpy",
                                                        "a.rpy", "b.rpy", "b.rpy"]

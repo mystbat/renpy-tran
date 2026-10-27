@@ -1,14 +1,19 @@
-"""稳定 uid 分配器 + 合并导入 uid 对位（用户裁决 2026-10-24）。
+"""uid 分配器测试（v3.1 降级版：会话内 1..N 序号）。
 
-uid = 文件路径 hash(16bit) << 16 | 文件内序号(16bit)：
-* 同文件同段跨导入 uid 一致 → 合并导入按 uid 直接对位，无需模糊匹配；
-* 不同文件 hash 不同 → 永不撞车。
+历史沿革（保留勿删，防重蹈）：
+* 2026-10-24 事故：合并导入按 uid 对位，但 uid 每次导入从 1 重编 →
+  新旧 uid 撞车 → 写回后 15 文件译文全部张冠李戴。
+* 2026-10-25 b13ce9e：改为「路径 hash + 段序号」，声称"永不撞车"，
+  实测 16-bit hash 在 3000 路径上 59 次碰撞——未测量的断言。
+* 2026-10-26 v3.1（segkey-identity）：跨导入身份改由段键 (file, source)
+  承担（pytran.identity），uid 降级为会话内序号，不再参与任何匹配。
 
-2026-10-24 事故：旧实现每次导入把 uid 从 1 重编，合并导入时新旧 uid
-撞车（旧 uid=5 配到新 uid=5 完全不同的段）→ 写回后 15 个文件译文
-全部张冠李戴。修复 = uid 分配稳定化，而非放弃 uid 主键。
+原 hash-uid 断言（跨文件唯一、高位区分 legacy、make_uid 稳定等）
+全部随方案退役而改写。
 """
 from __future__ import annotations
+
+import json
 
 from pytran.models import Segment, SegmentStatus
 from pytran.project import build_project, JsonProjectStore
@@ -28,34 +33,23 @@ def _seg(uid: int, file: str, source: str) -> Segment:
 
 
 def test_uid_stable_across_calls():
-    """同 (路径, 序号) → 同 uid（跨进程稳定）。"""
-    assert make_uid("a/b.rpy", 1) == make_uid("a/b.rpy", 1)
+    """兼容语义：make_uid/path_hash 保留为确定性纯函数（返回退化为序号/0）。"""
+    assert make_uid("a/b.rpy", 1) == make_uid("a/b.rpy", 1) == 1
     assert path_hash("a/b.rpy") == path_hash("a/b.rpy")
 
 
-def test_uid_unique_across_files():
-    """不同文件 → 不同 uid 段（hash 槽不同）。"""
-    uids = {make_uid(f"file{i}.rpy", 1) for i in range(50)}
-    assert len(uids) == 50, "不同文件同序号不得撞车"
-
-
-def test_uid_seq_stable_within_file():
-    """同文件不同序号 → 不同 uid，且按序号递增有序。"""
-    u = [make_uid("x.rpy", i) for i in range(1, 11)]
-    assert len(set(u)) == 10
-    assert u == sorted(u)
-
-
-def test_uid_high_bit_distinguishes_from_legacy():
-    """新 uid 恒 ≥ 1<<16（高位是路径 hash）——用于旧工程迁移检测。"""
-    assert make_uid("a.rpy", 1) >= (1 << 16)
+def test_assign_uids_flat_is_sequential():
+    """会话内序号：按出现顺序 1..N，文档顺序即 uid 顺序。"""
+    segs = [_seg(0, "a.rpy", "x"), _seg(0, "b.rpy", "y"), _seg(0, "a.rpy", "z")]
+    assign_uids_flat(segs)
+    assert [s.uid for s in segs] == [1, 2, 3]
 
 
 # -- build_project 分配 -----------------------------------------------------
 
 
 def test_build_project_stable_uids_same_file():
-    """同文件两次 build_project → 段 uid 完全一致（合并导入的前提）。"""
+    """同内容两次 build_project → 段 uid 完全一致（同顺序 → 同序号）。"""
     f = "tl/chinese2/script.rpy"
     segs1 = [_seg(0, f, f"s{i}") for i in range(5)]
     segs2 = [_seg(999, f, f"s{i}") for i in range(5)]  # 传入 uid 被忽略
@@ -65,7 +59,7 @@ def test_build_project_stable_uids_same_file():
 
 
 def test_build_project_multi_file_no_collision():
-    """多文件导入 uid 全局唯一（不再需要事后重编）。"""
+    """多文件导入 uid 全局唯一（连续编号 1..N）。"""
     segs = []
     for f in ("a.rpy", "b.rpy", "c.rpy"):
         segs.extend(_seg(0, f, f"{f}-s{i}") for i in range(20))
@@ -75,12 +69,11 @@ def test_build_project_multi_file_no_collision():
 
 
 def test_build_project_preserves_file_order():
-    """uid 序号 = 文件内出现顺序（与导入顺序一致，写回定位不受影响）。"""
+    """uid 序号 = 文档出现顺序（segmenter 批次随之回到真实阅读顺序）。"""
     f = "a.rpy"
     segs = [_seg(0, f, "x"), _seg(0, f, "y"), _seg(0, f, "z")]
     build_project(segs)
-    assert [s.uid for s in segs] == [
-        make_uid(f, 1), make_uid(f, 2), make_uid(f, 3)]
+    assert [s.uid for s in segs] == [1, 2, 3]
 
 
 def test_reassign_uids_opt_out():
@@ -90,37 +83,32 @@ def test_reassign_uids_opt_out():
     assert segs[0].uid == 7
 
 
-# -- 合并导入 uid 对位（核心回归） -------------------------------------------
+# -- 合并导入对位（核心回归：对位不再依赖 uid，但 uid 一致时旧行为不变） ------
 
 
 def test_merge_import_uid_alignment():
-    """核心：两次导入同文件 → uid 一致 → 旧译文按 uid 对位到正确段。
+    """两次导入同文件同内容 → uid 一致；按 uid 对位（旧行为兼容）仍正确。
 
-    这正是 2026-10-24 事故的反面：旧 uid=5 现在仍指向同文件第 5 段，
-    不再是「新工程同号的另一段」。
+    v3.1 后 _merge_import 实际走身份对位（file, source），本用例保留
+    以证明"内容不变时"两种语义结果一致——正常路径零变化。
     """
     f1, f2 = "tl/chinese2/common.rpy", "tl/chinese2/exp-wos.rpy"
-    # 第一次导入：common + exp-wos
     first = ([_seg(0, f1, f"c{i}") for i in range(6)]
              + [_seg(0, f2, f"w{i}") for i in range(6)])
     build_project(first)
     uid_of_common_5 = first[4].uid
     uid_of_wos_3 = first[6 + 2].uid
 
-    # 给 common 第 5 段一个可识别译文
     first[4].target = "COMMON5译文"
     first[4].status = SegmentStatus.TRANSLATED
 
-    # 第二次导入（模拟合并导回）：重新解析同文件
     second = ([_seg(0, f1, f"c{i}") for i in range(6)]
               + [_seg(0, f2, f"w{i}") for i in range(6)])
     build_project(second)
 
-    # uid 一致 → 对位成功
     assert second[4].uid == uid_of_common_5
     assert second[6 + 2].uid == uid_of_wos_3
 
-    # 模拟 _merge_import 的 uid 对位
     old_translated = {s.uid: s.target for s in first
                       if s.status == SegmentStatus.TRANSLATED and s.target}
     for s in second:
@@ -131,14 +119,15 @@ def test_merge_import_uid_alignment():
     assert second[4].target == "COMMON5译文"
     assert second[4].source == "c4"
     assert second[4].status == SegmentStatus.REVIEWED
-    # 其它段不受影响
     assert second[3].target is None
     assert second[6].target is None
 
 
 def test_merge_import_no_cross_file_leak():
-    """合并导入不得把 A 文件的译文写到 B 文件（hash 槽隔离）。"""
+    """合并导入不得把 A 文件的译文写到 B 文件（身份含文件维度）。"""
     fa, fb = "tl/chinese2/a.rpy", "tl/chinese2/b.rpy"
+    from pytran.identity import resolve_batch
+
     first = [_seg(0, fa, f"a{i}") for i in range(4)] + \
             [_seg(0, fb, f"b{i}") for i in range(4)]
     build_project(first)
@@ -148,11 +137,15 @@ def test_merge_import_no_cross_file_leak():
     second = [_seg(0, fa, f"a{i}") for i in range(4)] + \
              [_seg(0, fb, f"b{i}") for i in range(4)]
     build_project(second)
-    old = {s.uid: s.target for s in first if s.target}
-    for s in second:
-        if s.uid in old:
-            s.target = old[s.uid]
-    # b 文件段（下标 4..7）一个都不该拿到译文
+
+    rows = [type("R", (), {"file": s.file, "locator": s.locator,
+                           "feature": s.feature, "source": s.source,
+                           "target": s.target})()
+            for s in first if s.target]
+    out = resolve_batch(second, rows)
+    assert len(out.matches) == 1
+    assert out.matches[0].segment.file == fa
+    # b 文件段一个都不该拿到译文
     for s in second[4:]:
         assert s.target is None, f"{s.file} 段被错配了译文"
 
@@ -160,28 +153,27 @@ def test_merge_import_no_cross_file_leak():
 # -- 旧工程迁移 -------------------------------------------------------------
 
 
-def test_load_migrates_legacy_uids(tmp_path):
-    """旧格式 project.json（1..N 顺序 uid）加载时迁移为稳定 uid。"""
+def test_load_migrates_legacy_hash_uids(tmp_path):
+    """旧格式 project.json（路径 hash 大整数 uid）加载时重编为 1..N。"""
     legacy = {
         "version": 3, "app": "pytran",
         "files": [{"name": "a.rpy", "game_relpath": "a.rpy"}],
         "next_uid": 4,
         "segments": [
-            {"uid": 1, "file": "a.rpy", "locator": "# game/a.rpy:1",
+            {"uid": 1130168321, "file": "a.rpy", "locator": "# game/a.rpy:1",
              "feature": "f", "kind": "dialogue", "comment": "", "role": "",
              "source": "s1", "target": "T1", "status": "translated",
              "attempts": 0, "error": None, "indent": 4},
-            {"uid": 2, "file": "a.rpy", "locator": "# game/a.rpy:2",
+            {"uid": 1130168322, "file": "a.rpy", "locator": "# game/a.rpy:2",
              "feature": "f", "kind": "dialogue", "comment": "", "role": "",
              "source": "s2", "target": None, "status": "pending",
              "attempts": 0, "error": None, "indent": 4},
         ],
         "term_profile": "profile.json", "game_root": "",
     }
-    import json
     (tmp_path / "project.json").write_text(
         json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
     loaded = JsonProjectStore().load(tmp_path)
-    assert [s.uid for s in loaded.segments] == [
-        make_uid("a.rpy", 1), make_uid("a.rpy", 2)]
+    assert [s.uid for s in loaded.segments] == [1, 2]
+    assert loaded.next_uid == 3
     assert loaded.segments[0].target == "T1"  # 内容不丢

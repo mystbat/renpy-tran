@@ -17,6 +17,7 @@ import pytest
 from pytran.config import TermProfile
 from pytran.exporter import (
     CSV_COLUMNS,
+    CSV_COLUMNS_V2,
     CSV_DELIMITER,
     ExporterImpl,
     bulk_undo,
@@ -76,48 +77,59 @@ def test_export_csv_roundtrip(work_dir: Path) -> None:
     assert path.exists()
 
     rows = list(path.read_text(encoding="utf-8-sig").splitlines())
-    # 表头
+    # 表头（v2：首列 key）
     header = rows[0].split(CSV_DELIMITER)
-    assert header == CSV_COLUMNS
-    # 数据行按 uid 定位
+    assert header == CSV_COLUMNS_V2
+    # 数据行按 uid 定位（uid 现为第 2 列，target 为第 7 列）
     by_uid = {}
     for line in rows[1:]:
         cells = line.split(CSV_DELIMITER)
-        by_uid[cells[0]] = cells
-    assert by_uid["1"][5] == "你好"
-    assert by_uid["3"][5] == "Press start"
+        by_uid[cells[1]] = cells
+    assert by_uid["1"][6] == "你好"
+    assert by_uid["3"][6] == "Press start"
 
 
 def test_project_to_csv_rows_shape() -> None:
     proj = _make_project()
     rows = project_to_csv_rows(proj)
-    assert rows[0] == CSV_COLUMNS
+    assert rows[0] == CSV_COLUMNS_V2
     assert len(rows) == 1 + len(proj.segments)
 
 
 def test_rows_to_project_map_with_and_without_header() -> None:
-    with_header = [list(CSV_COLUMNS), ["1", "loc1", "f1", "", "Hello", "你好"]]
+    from pytran.identity import segment_key
+
+    k1 = segment_key("a.rpy", "Hello")
+    # v2 表头（key 列）
+    with_header = [list(CSV_COLUMNS_V2),
+                   [k1, "1", "loc1", "f1", "", "Hello", "你好"]]
     m1 = rows_to_project_map(with_header)
-    assert m1[1]["target"] == "你好"
-    # 无表头纯数据
-    without = [["2", "loc2", "f2", "", "World", "世界"]]
-    m2 = rows_to_project_map(without)
-    assert m2[2]["target"] == "世界"
+    assert m1[k1]["target"] == "你好"
+    # v1 旧表头（uid 列）：按 (定位符文件, 原文) 重建 key
+    v1 = [list(CSV_COLUMNS), ["2", "# game/a.rpy:2", "f2", "", "World", "世界"]]
+    m2 = rows_to_project_map(v1)
+    assert m2[segment_key("a.rpy", "World")]["target"] == "世界"
+    # 无表头纯数据（按 v1 解析）
+    without = [["2", "# game/a.rpy:2", "f2", "", "World", "世界"]]
+    m3 = rows_to_project_map(without)
+    assert m3[segment_key("a.rpy", "World")]["target"] == "世界"
     # 脏行（列不足）被忽略
-    assert 99 not in rows_to_project_map([["99", "x"]])
+    assert rows_to_project_map([["99", "x"]]) == {}
 
 
 # --------------------------------------------------------------------------- #
-# §6.4 import_csv（uid 主键 + §6.2 兜底）+ 不静默全量覆盖
+# §6.4 import_csv（身份对位）+ 不静默全量覆盖
 # --------------------------------------------------------------------------- #
 def test_import_csv_by_uid(work_dir: Path, profile: TermProfile) -> None:
+    from pytran.identity import segment_key
+
     proj = _make_project()
     exp = ExporterImpl(FakeParser())
-    # 手改 uid=1 的译文
+    # 手改 a.rpy"Hello" 的译文（key 定位）
     csv_path = work_dir / "in.csv"
     csv_path.write_text(
-        CSV_DELIMITER.join(CSV_COLUMNS) + "\n"
-        + CSV_DELIMITER.join(["1", "loc1", "f1", "", "Hello", "你好吗"]) + "\n",
+        CSV_DELIMITER.join(CSV_COLUMNS_V2) + "\n"
+        + CSV_DELIMITER.join([segment_key("a.rpy", "Hello"), "1", "loc1", "f1", "", "Hello", "你好吗"]) + "\n",
         encoding="utf-8-sig",
     )
     updated, unmatched = exp.import_csv(proj, csv_path, profile)
@@ -129,13 +141,15 @@ def test_import_csv_by_uid(work_dir: Path, profile: TermProfile) -> None:
 
 
 def test_import_csv_does_not_silent_overwrite_all(work_dir: Path, profile: TermProfile) -> None:
-    """CSV 只含 uid=2 的改译：uid=1/3 的译文必须保持原样。"""
+    """CSV 只含 a.rpy"World" 的改译：其它行译文必须保持原样。"""
+    from pytran.identity import segment_key
+
     proj = _make_project()
     exp = ExporterImpl(FakeParser())
     csv_path = work_dir / "in.csv"
     csv_path.write_text(
-        CSV_DELIMITER.join(CSV_COLUMNS) + "\n"
-        + CSV_DELIMITER.join(["2", "loc2", "f2", "", "World", "世界改"]) + "\n",
+        CSV_DELIMITER.join(CSV_COLUMNS_V2) + "\n"
+        + CSV_DELIMITER.join([segment_key("a.rpy", "World"), "2", "loc2", "f2", "", "World", "世界改"]) + "\n",
         encoding="utf-8-sig",
     )
     exp.import_csv(proj, csv_path, profile)
@@ -148,12 +162,14 @@ def test_import_csv_does_not_silent_overwrite_all(work_dir: Path, profile: TermP
 
 
 def test_import_csv_empty_target_back_to_pending(work_dir: Path, profile: TermProfile) -> None:
+    from pytran.identity import segment_key
+
     proj = _make_project()
     exp = ExporterImpl(FakeParser())
     csv_path = work_dir / "in.csv"
     csv_path.write_text(
-        CSV_DELIMITER.join(CSV_COLUMNS) + "\n"
-        + CSV_DELIMITER.join(["1", "loc1", "f1", "", "Hello", ""]) + "\n",
+        CSV_DELIMITER.join(CSV_COLUMNS_V2) + "\n"
+        + CSV_DELIMITER.join([segment_key("a.rpy", "Hello"), "1", "loc1", "f1", "", "Hello", ""]) + "\n",
         encoding="utf-8-sig",
     )
     exp.import_csv(proj, csv_path, profile)

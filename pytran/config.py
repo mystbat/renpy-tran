@@ -23,6 +23,12 @@
   「切备用模型」档，而 ``round_budget_cap`` 只有 5，实测回退模型
   只拿到 **1 次**尝试就撞轮数上限被判死——等于「有回退但形同虚设」。
   新字段让用户按失败次数直接切，绕开三档的轮次消耗。
+- 2026-10-25 经总控批准新增 ``[Model]`` 段 1 字段
+  ``fallback_enable_thinking``（回退模型专用思维链开关，默认 ``true``）。
+  **仅新增，未改动任何既有字段语义**。背景：``enable_thinking`` 是全局
+  单一开关，主模型与回退模型共用；用户要求给回退模型单独设开关，故拆成
+  两个**互相独立**的字段。默认 ``true`` = 允许思维链，与改造前回退请求
+  逐字节一致，旧 config.ini 无需迁移。
 """
 from __future__ import annotations
 
@@ -66,6 +72,7 @@ max_tokens = 2048
 temperature = 0.2
 top_p = 0.9
 enable_thinking = true
+fallback_enable_thinking = true
 
 [Engine]
 max_workers = 3
@@ -102,6 +109,7 @@ _INI_SECTION_MAP: dict[tuple[str, str], str] = {
     ("Model", "temperature"): "temperature",
     ("Model", "top_p"): "top_p",
     ("Model", "enable_thinking"): "enable_thinking",
+    ("Model", "fallback_enable_thinking"): "fallback_enable_thinking",
     ("Engine", "max_workers"): "max_workers",
     ("Engine", "timeout"): "timeout",
     ("Engine", "max_retry_rounds"): "max_retry_rounds",
@@ -137,15 +145,19 @@ class Config:
     # False=请求体带 extra_body.enable_thinking=False 抑制推理。
     # 只影响**翻译**请求；复核请求不走此开关。
     enable_thinking: bool = True
+    # 回退模型专用思维链开关（2026-10-25 新增，用户要求「给回退模型设置思维链开关」）。
+    # 与主模型的 enable_thinking **互相独立**：切到回退模型时用这一个。
+    # 默认 True = 允许思维链（与改造前的全局行为一致，升级后回退请求不变）。
+    fallback_enable_thinking: bool = True
     max_workers: int = 3                 # §4.3 并发，config 可调
     timeout: float = 120.0               # 请求超时秒（§4.1）
     max_retry_rounds: int = 3            # 重译轮上限（config 不得超过 round_budget_cap，§5.3）
     round_budget_cap: int = 5
     # 主模型连续失败多少次后切回退模型（2026-10-25 新增）。
-    # 0 = 永不回退（默认，维持既有行为）；需同时配置 fallback_model 才生效。
+    # 0 = 永不回退（默认）；需同时配置 fallback_model 才生效。
     # 绕开 STUCK 三档的轮次消耗——三档要连续 3 轮哈希相同才切备用模型，
     # 而 round_budget_cap 只有 5，导致回退模型只剩 1 次机会。
-    fallback_after_failures: int = 0            # 代码硬上限（§5.3 无条件终止线）
+    fallback_after_failures: int = 0     # 0=不回退；1~N=连续 N 轮无进展后切
     keep_declare_rate_limit: float = 0.15  # §5.4 申报率阈值（ADR-0006 双口径）
     keep_declare_min_batch: int = 5      # §5.4 单批降级的最小样本量（ADR-0006）
     keep_declare_min_total: int = 20     # §5.4 累计闸的最小样本量（ADR-0006）
@@ -242,6 +254,9 @@ class Config:
         # 思维链开关：默认 True（=维持既有行为，旧 ini 缺此键时不改变行为）。
         self.enable_thinking = _coerce_bool(
             getattr(self, "enable_thinking", True), default=True)
+        # 回退模型思维链开关：默认 True（=允许），旧 ini 缺此键时行为不变。
+        self.fallback_enable_thinking = _coerce_bool(
+            getattr(self, "fallback_enable_thinking", True), default=True)
 
 
 @dataclass

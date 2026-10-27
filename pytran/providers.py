@@ -78,10 +78,12 @@ class OpenAIProvider:
         config: Config,
         client: Any | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        on_progress: "Callable[[str], None] | None" = None,
     ) -> None:
         self._config = config
         self._sleep = sleep
         self._client = client
+        self._on_progress = on_progress
         if self._client is None:
             self._client = self._build_client(config)
 
@@ -195,7 +197,17 @@ class OpenAIProvider:
         # 限流雪崩的主要放大源，故关掉它同时缓解 429。
         # 只作用于**翻译**请求（用户明确要求）；复核走 review_text，不在此处。
         # 注意：True 时**不发**该参数，保持与历史请求逐字节一致（旧配置行为不变）。
-        if not getattr(self._config, "enable_thinking", True):
+        #
+        # FEATURE(fallback-thinking) 2026-10-25：主模型与回退模型各有独立开关。
+        # 按**本次实际使用的模型**取对应字段——否则会出现「主模型关了思维链，
+        # 切到回退模型又偷偷开起来」的意外。仅当真的切了模型才用回退开关，
+        # 因为 use_fallback_model=True 但未配 fallback_model 时实际仍走主模型
+        # （见 protocol.build_request_params）。
+        if use_fallback_model and getattr(self._config, "fallback_model", ""):
+            thinking_on = getattr(self._config, "fallback_enable_thinking", True)
+        else:
+            thinking_on = getattr(self._config, "enable_thinking", True)
+        if not thinking_on:
             params["extra_body"] = {"enable_thinking": False}
         # BUGFIX(timeout-amplify)：按本批行数放大超时，覆盖整块生成耗时。
         params["timeout"] = self._effective_timeout(len(numbered_lines))
@@ -263,14 +275,20 @@ class OpenAIProvider:
         attempts = max(1, int(getattr(self._config, "effective_max_retry_rounds", None)
                               and self._config.effective_max_retry_rounds() or 1) or 1)
         last_error: Exception | None = None
+        model = params.get("model", "?")
+        rows = len(ids)
         for attempt in range(1, attempts + 1):
             try:
+                if self._on_progress:
+                    self._on_progress(f"正在请求模型 {model}（{rows} 行，第 {attempt} 次尝试）……")
                 logger.debug(
                     "请求 model=%s uid=%s..%s 共%d行（第%d次）",
                     params.get("model"), ids[0], ids[-1], len(ids), attempt,
                 )
                 response = self._client.chat.completions.create(**params)
                 content = self._extract_content(response)
+                if self._on_progress:
+                    self._on_progress(f"已收到 {rows} 行响应")
                 logger.debug("响应预览：%s", self._preview(content))
                 return content
             except Exception as exc:  # noqa: BLE001 - 第三方异常类型不可枚举
@@ -281,6 +299,8 @@ class OpenAIProvider:
                 if attempt >= attempts:
                     break
                 delay = self._retry_delay(exc, attempt)
+                if self._on_progress:
+                    self._on_progress(f"调用失败（{type(exc).__name__}），{delay:.0f}s 后重试（{attempt}/{attempts}）……")
                 logger.warning(
                     "调用失败（%s），%.0fs 后重试（%d/%d）", type(exc).__name__, delay, attempt, attempts
                 )

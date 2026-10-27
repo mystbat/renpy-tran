@@ -11,7 +11,6 @@ from __future__ import annotations
 import pytest
 
 from pytran.backfill import (
-    SIMILARITY_THRESHOLD,
     TranslationMatch,
     TranslationRow,
     evaluate_export_fuse,
@@ -48,62 +47,78 @@ def test_normalize_feature_strips_and_unifies_quotes_and_colons():
 
 
 # ----------------------------- §6.2 uid 精确 -----------------------------
-# DECISION(stable-uid, 用户裁决 2026-10-24)：uid 是唯一性主键，级匹配
-# 默认开启。2026-10-24 合并导入事故的根因不是「uid 匹配」，而是 uid
-# 分配不稳定（每次导入从 1 重编 → 新旧 uid 撞车）。现已改为「文件路径
-# hash + 文件内序号」稳定分配（pytran.uids.make_uid），同文件同段跨导入
-# uid 一致，uid 级匹配从此安全可靠。详见
-# docs/BUGFIX-merge-uid-collision.md。
+# DECISION(segkey-identity, 2026-10-26)：三级兜底链已退役（复盘证明每个
+# "高级别"的正确性依赖未验证的外部前提）。match_translations 现为薄包装，
+# 转调 identity.resolve_batch 身份精确对位，method 统一为 "identity"。
+# 原「uid 主键/优先级/相似度」用例按新语义重写；uid 参数被忽略。
 
 
 def test_match_by_uid_exact():
+    """同文件同原文 → 身份命中（uid 字段不再参与判定）。"""
     segs = [_seg(10, "say", "a.rpy:5", "hello")]
-    rows = [_row(uid=10, feature="other", locator="zzz", source="x", target="你好")]
+    rows = [_row(uid=10, feature="other", locator="zzz", source="hello", target="你好")]
     out = match_translations(segs, rows)
     assert len(out.matches) == 1
     m = out.matches[0]
-    assert m.method == "uid"
+    assert m.method == "identity"
     assert m.segment.uid == 10
     assert out.unmatched == []
 
 
 def test_match_uid_takes_precedence_over_feature():
-    # 同一 feature 匹配到另一 uid，但 uid 命中优先
+    """原文一致的行命中原文一致的段——不存在"uid 盲胜"。
+    （原用例语义已随 uid 盲胜一并证伪，见 v3.1 任务书 §5.4。）"""
+    segs = [
+        _seg(10, "say", "a.rpy:5", "hello"),
+        _seg(20, "say", "a.rpy:9", "world"),
+    ]
+    rows = [_row(uid=10, feature="say", locator="a.rpy:9", source="hello", target="X")]
+    out = match_translations(segs, rows)
+    assert out.matches[0].method == "identity"
+    assert out.matches[0].segment.uid == 10
+
+
+def test_uid_hit_rejected_when_source_is_a_different_line():
+    """uid 命中但原文已是另一句话 → 拒绝，不得错误覆盖。"""
     segs = [
         _seg(10, "say", "a.rpy:5", "hello"),
         _seg(20, "say", "a.rpy:9", "world"),
     ]
     rows = [_row(uid=10, feature="say", locator="a.rpy:9", source="world", target="X")]
     out = match_translations(segs, rows)
-    assert out.matches[0].method == "uid"
-    assert out.matches[0].segment.uid == 10
+    # 不得落在 uid=10（那是 hello）；应落到原文一致的 uid=20
+    assert all(m.segment.source != "hello" for m in out.matches)
+    hit = [m for m in out.matches if m.segment.uid == 20]
+    assert hit and hit[0].method == "identity"
 
 
 def test_uid_matching_opt_out_for_untrusted_source():
-    """uid 不可信（外部 CSV 乱序 uid）时显式关闭，退特征码兜底。"""
+    """uid 不可信来源：身份对位天然不依赖 uid，行为等同。"""
     segs = [_seg(10, "say", "a.rpy:5", "hello")]
     rows = [_row(uid=999, feature="say", locator="a.rpy:5",
                  source="hello", target="你好")]
     out = match_translations(segs, rows, use_uid_matching=False)
     assert len(out.matches) == 1
-    assert out.matches[0].method == "feature"
+    assert out.matches[0].method == "identity"
 
 
 # ----------------------------- §6.2 特征码归一化 -----------------------------
 
 def test_match_by_normalized_feature():
-    # §6.2：'' 与 "" 都归一化为 "，因此 say''old 与 say"old 等值
+    """v3.1：特征码不再参与匹配（身份 = 文件+原文），行为按命中数验证。"""
     segs = [_seg(11, "say''old", "a.rpy:5", "hello")]
     rows = [_row(feature='say"old', locator="elsewhere", source="hello", target="你好")]
     out = match_translations(segs, rows, use_uid_matching=True)
     assert len(out.matches) == 1
-    assert out.matches[0].method == "feature"
+    assert out.matches[0].method == "identity"
     assert out.matches[0].segment.uid == 11
 
 
-# ----------------------------- §6.2 相似度兜底 -----------------------------
+# ----------------------------- §6.2 相似度兜底（已删除） -----------------------------
 
 def test_match_by_similarity_same_locator():
+    """v3.1：相似度兜底已整体移除（复盘 §3.2「带日志的猜测仍是猜测」）。
+    同文件同原文仍命中（身份级），method 为 identity 而非 similarity。"""
     segs = [_seg(12, "say", "a.rpy:5", "the quick brown fox jumps over")]
     rows = [_row(
         feature="x", locator="a.rpy:5",
@@ -112,16 +127,21 @@ def test_match_by_similarity_same_locator():
     out = match_translations(segs, rows, use_uid_matching=True)
     assert len(out.matches) == 1
     m = out.matches[0]
-    assert m.method == "similarity"
+    assert m.method == "identity"
     assert m.segment.uid == 12
 
 
 def test_no_similarity_across_different_locator():
+    """v3.1 语义裁决：相似度级已删除。row 定位符指向 a.rpy:99、段文件
+    为 a.rpy——locator_file 反推的文件一致且原文精确相等 → 按身份命中
+    （这不是相似度兜底，是身份精确对位；原用例防御的"跨定位符相似度
+    猜测"在无相似度级的构造下不可能发生）。"""
     segs = [_seg(13, "say", "a.rpy:5", "the quick brown fox jumps over")]
     rows = [_row(feature="x", locator="a.rpy:99", source="the quick brown fox jumps over", target="Y")]
     out = match_translations(segs, rows, use_uid_matching=True)
-    assert out.matches == []
-    assert len(out.unmatched) == 1
+    assert len(out.matches) == 1
+    assert out.matches[0].method == "identity"
+    assert out.matches[0].segment.uid == 13
 
 
 def test_similarity_below_threshold_is_unmatched():
@@ -151,8 +171,9 @@ def test_no_double_consume_same_segment():
         _row(uid=None, feature="say", locator="a.rpy:5", source="hello", target="B"),
     ]
     out = match_translations(segs, rows, use_uid_matching=True)
+    # 一个段只被消费一次；第二条同原文行进 unmatched（桶耗尽不猜）
     assert len(out.matches) == 1
-    assert out.matches[0].method == "uid"
+    assert out.matches[0].method == "identity"
     assert len(out.unmatched) == 1
 
 
@@ -209,3 +230,54 @@ def test_skipped_segments_excluded_from_fuse():
     ])
     d = evaluate_export_fuse(proj)
     assert d == {}
+
+
+# ----------------------------- v3.1 §2.5 构造性不变量 -----------------------------
+
+def test_identity_violation_raises_on_source_mismatch():
+    """任务书验收 4.1-6：身份命中但原文不一致必须在构造点显式爆炸。
+
+    这条防线保证：任何未来改动若重新引入模糊命中（如相似度兜底复活、
+    按位置盲取桶段），都会在此异常中暴露，而不是静默错位写回游戏文件。
+    """
+    from pytran.identity import resolve_batch, IdentityViolation
+    from pytran import identity as identity_mod
+    from pytran.models import Segment
+
+    seg = Segment(
+        uid=1, file="a.rpy", locator="# game/a.rpy:1", feature="f",
+        kind="dialogue", comment="", role="", source="hello",
+    )
+
+    class Row:
+        file = "a.rpy"
+        source = "hello"
+        target = "X"
+
+    # 正常路径不炸
+    out = resolve_batch([seg], [Row()])
+    assert len(out.matches) == 1
+
+    # 模拟未来回归：resolve_next 放弃等值筛选（相似度兜底/位置盲取复活）
+    seg.source = "hacked"   # 段原文与 row 不再一致
+    orig = identity_mod.IdentityResolver.resolve_next
+
+    def fuzzy_resolve(self, file, source):
+        for key, entry in self._index._buckets.items():
+            if key.startswith("v1\x1fa.rpy\x1f"):
+                for s in entry.segments:
+                    if s.uid not in self._used_uids:
+                        self._used_uids.add(s.uid)
+                        return s
+        return None
+
+    identity_mod.IdentityResolver.resolve_next = fuzzy_resolve
+    try:
+        with pytest.raises(IdentityViolation):
+            resolve_batch([seg], [Row()])
+    finally:
+        identity_mod.IdentityResolver.resolve_next = orig
+
+    # 恢复后：篡改的段原文不匹配 → unmatched（不猜，不炸）
+    out2 = resolve_batch([seg], [Row()])
+    assert out2.matches == [] and len(out2.unmatched) == 1

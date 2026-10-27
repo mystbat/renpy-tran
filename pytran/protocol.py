@@ -190,7 +190,15 @@ def build_user_prompt(
         lines = [f'"{src}"\n  → "{dst}"' for _uid, src, dst in recent]
         blocks.append("前文参考（仅供语气衔接，**不要翻译**）：\n" + "\n".join(lines))
 
-    body = "\n".join(f"{uid}|{text}" for uid, text in numbered_lines)
+    body_lines = []
+    for item in numbered_lines:
+        if len(item) == 3:
+            uid, role, text = item
+            body_lines.append(f"{uid}|{role}|{text}" if role else f"{uid}||{text}")
+        else:
+            uid, text = item
+            body_lines.append(f"{uid}|{text}")
+    body = "\n".join(body_lines)
     blocks.append(f"待翻译（{len(numbered_lines)} 行）：\n{body}")
 
     if allow_keep_declare:

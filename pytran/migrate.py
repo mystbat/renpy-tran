@@ -122,13 +122,14 @@ class ProjectMigrator(Migrator):
             lines = _read_rpy_lines(rpy_path)
 
             dlg_rows: dict[str, list[str]] = {}
-            str_rows: dict[str, str] = {}
+            str_rows: list[tuple[str, str]] = []   # (原文, 译文) 列表，保序
             csv_dir = split_bak / base
             if csv_dir.is_dir():
                 for csv_path in sorted(csv_dir.glob("*-s.csv"), key=_n_from_csv_path):
                     for locator, feature, target in _iter_csv_rows(csv_path):
                         if feature.startswith('old "'):
-                            str_rows[_unquote_old_feature(feature)] = target
+                            str_rows.append(
+                                (_unquote_old_feature(feature), target))
                         elif (
                             feature.startswith(_TRANSLATE_CHINESE_PREFIX)
                             and feature != _STRINGS_FEATURE
@@ -185,10 +186,48 @@ class ProjectMigrator(Migrator):
 
     @staticmethod
     def _align_strings(
-        segs: list[Segment], lines: list[str], str_rows: dict[str, str]
+        segs: list[Segment], lines: list[str], str_rows: list[tuple[str, str]]
     ) -> None:
         """字符串：``old "X"`` 是英文参考（保持 PENDING）；
-        ``new "X"`` / 裸字符串 按原文 X 在 2.0 中查译文回填。"""
+        ``new "X"`` / 裸字符串 按原文 X 在 2.0 中查译文回填。
+
+        BUGFIX(strings-identity, 2026-10-26 / 复盘缺陷 #11)：早先
+        ``str_rows: dict.get(source)`` 无唯一性守卫——重复原文只留最后
+        一条译文，多条段共抢同一条。现改走统一身份出口
+        ``pytran.identity.resolve_batch``：按 (file, source) 桶 FIFO 对位，
+        与合并导入 / CSV 同一语义；对不上保持 PENDING（不猜）。
+        """
+        from .identity import resolve_batch
+
+        class _StrRow:
+            __slots__ = ("file", "source", "target", "locator", "feature")
+
+            def __init__(self, source: str, target: str) -> None:
+                self.file = getattr(segs[0], "file", "") if segs else ""
+                self.source = source
+                self.target = target
+                self.locator = ""
+                self.feature = ""
+
+        # 只对齐 new/裸字符串段（old 参考行不回填）
+        targets = [
+            s for s in segs
+            if s.kind == "strings"
+            and _line_no(s.locator) is not None
+            and 0 < _line_no(s.locator) <= len(lines)
+            and not lines[_line_no(s.locator) - 1].strip().startswith("old ")
+        ]
+        outcome = resolve_batch(targets, [_StrRow(src, tgt) for src, tgt in str_rows])
+        for m in outcome.matches:
+            m.segment.target = m.row.target
+            m.segment.status = SegmentStatus.TRANSLATED
+        unmatched_n = len(outcome.unmatched)
+        if unmatched_n:
+            logger.info(
+                "迁移 strings：%d 条 2.0 译文身份未命中（原文不存在/重复耗尽），"
+                "保持 PENDING", unmatched_n,
+            )
+        # old 参考行 / 定位符异常段的旧逻辑保留
         for s in segs:
             if s.kind != "strings":
                 continue
@@ -196,17 +235,6 @@ class ProjectMigrator(Migrator):
             if ln is None or ln > len(lines):
                 s.status = SegmentStatus.FAILED
                 s.error = "strings 定位符无法解析"
-                continue
-            text = lines[ln - 1].strip()
-            if text.startswith("old "):
-                # 英文参考行：保留原文，不填译文（保持 PENDING）。
-                continue
-            # new "X" 或裸字符串：按原文文本匹配 2.0 译文。
-            tgt = str_rows.get(s.source)
-            if tgt:
-                s.target = tgt
-                s.status = SegmentStatus.TRANSLATED
-            # else：2.0 无该字符串译文 → 保持 PENDING（引擎翻译）
 
     @staticmethod
     def _finalize(project: Project) -> None:
