@@ -211,7 +211,13 @@ class OpenAIProvider:
             params["extra_body"] = {"enable_thinking": False}
         # BUGFIX(timeout-amplify)：按本批行数放大超时，覆盖整块生成耗时。
         params["timeout"] = self._effective_timeout(len(numbered_lines))
-        sources = {uid: text for uid, text in numbered_lines}
+        sources = {}
+        for item in numbered_lines:
+            if len(item) == 3:
+                uid, _role, text = item
+            else:
+                uid, text = item[0], item[1]
+            sources[uid] = text
         ids = [uid for uid, _ in numbered_lines]
 
         raw = self._request_with_retry(params, ids)
