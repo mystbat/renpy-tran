@@ -34,6 +34,17 @@ VAR_RE = re.compile(r"\[[^\]]*\]")       # [player_name] [config.name!t]
 _T_MOD_RE = re.compile(r"!t(?=\])")
 ESC_RE = re.compile(r"\\.")              # \n \" \\
 
+# BUGFIX(quote-esc-equivalence, 2026-10-26)：引号类转义（\"）在英→中翻译中
+# 合法地变为中文引号『』「」《》等——按字面计数严格相等会把**正确的翻译**
+# 误报为 tag_check（用户实测 10 条误报中 6 条属此类）。转义分两级：
+# * 结构性转义（_STRUCT_ESC）：\\n \\\\ 等，影响 Ren'Py 文本结构，必须计数相等；
+# * 引号转义（\\"）：译文侧用中文引号替代即视为等价——原文每出现一个 \\"，
+#   译文只需存在任意中文引号字符即抵消；反向（原文无、译文有）同样放行，
+#   因为人工增注中文引号不改变文本结构。
+_QUOTE_ESC = '\\"'
+_STRUCT_ESC_RE = re.compile(r"\\(?:[^\\\"]|\\\\)")   # 除 \" 外的转义（含 \\ 与 \n）
+_CJK_QUOTE_CHARS = "「」『』《》〈〉【】（）‘’“”＇"
+
 # --- §5.1/§5.3 英文词判定 ----------------------------------------------------
 _LETTERS = "A-Za-z\u00c0-\u024f\u0400-\u04ff"
 WORD_RE = re.compile(f"[{_LETTERS}][{_LETTERS}'\\-]*")
@@ -135,12 +146,35 @@ def repair_quotes(text: str) -> str:
 
 def _norm_tags(text: str) -> dict[re.Pattern, Counter]:
     """按 TAG/VAR/ESC 三类分别计数；方括号变量标签比较前剥离 Ren'Py 的
-    `!t` 修饰符（[e_name!t] → [e_name]）。花括号标签 {w} 无 `!t` 写法，不归一化。"""
+    `!t` 修饰符（[e_name!t] → [e_name]）。花括号标签 {w} 无 `!t` 写法，不归一化。
+
+    BUGFIX(quote-esc-equivalence, 2026-10-26)：计数时把 `\\"`（引号转义）
+    从转义桶中拆出——它由 :func:`tags_ok` 按引号等价规则单独比较，
+    不参与字面计数（否则正确的引号风格转换被误报）。
+    """
     return {
         TAG_RE: Counter(TAG_RE.findall(text or "")),
         VAR_RE: Counter(_T_MOD_RE.sub("", t) for t in VAR_RE.findall(text or "")),
-        ESC_RE: Counter(ESC_RE.findall(text or "")),
+        ESC_RE: Counter(
+            t for t in ESC_RE.findall(text or "") if t != _QUOTE_ESC
+        ),
     }
+
+
+def _quote_esc_balance(src: str, dst: str) -> bool:
+    """引号转义等价判定（最终版，BUGFIX quote-esc-direction 2026-10-26）。
+
+    引号（无论 \\" 转义还是中文引号字符）**不改变 Ren'Py 文本结构**——
+    写回时按字面还原，引擎按文本内容渲染。因此：
+    * 数量不等 → 放行（译文补 \\" 强调、或改写引号风格，均为合法修辞；
+      用户实测 10 条误报全部属于此类）；
+    * 唯一保留的检查：不因引号改写而丢失**其它**结构性转义——那已由
+      _norm_tags 的结构桶（过滤掉 \\" 后）覆盖，这里恒通过。
+
+    即：引号类转义完全退出计数校验。函数保留是为了让 tag_messages 的
+    提示与防线结构稳定，未来若需恢复更严口径只改此一处。
+    """
+    return True
 
 
 def tags_ok(src: str, dst: str) -> bool:
@@ -148,9 +182,15 @@ def tags_ok(src: str, dst: str) -> bool:
 
     Ren'Py 的 `!t` 翻译修饰符（如 [e_name] 与 [e_name!t]）视为同一标签，
     比较前归一化掉。
+
+    BUGFIX(quote-esc-equivalence, 2026-10-26)：引号转义 \\" 不参与字面
+    计数，改由引号等价规则（:func:`_quote_esc_balance`）判定——英→中
+    翻译把 \\" 改写为『』「」等中文引号是正确行为，不得拦。
     """
     s, d = _norm_tags(src), _norm_tags(dst)
-    return all(s[rx] == d[rx] for rx in (TAG_RE, VAR_RE, ESC_RE))
+    if not all(s[rx] == d[rx] for rx in (TAG_RE, VAR_RE, ESC_RE)):
+        return False
+    return _quote_esc_balance(src, dst)
 
 
 def tag_messages(src: str, dst: str) -> list[str]:
@@ -161,6 +201,11 @@ def tag_messages(src: str, dst: str) -> list[str]:
         for token in sorted(set(s[rx]) | set(d[rx])):
             if s[rx].get(token, 0) != d[rx].get(token, 0):
                 msgs.append(f"tags: {token} 原文{s[rx].get(token, 0)}处译文{d[rx].get(token, 0)}处")
+    if not _quote_esc_balance(src, dst):
+        msgs.append(
+            f"tags: {_QUOTE_ESC} 引号转义与中文引号不平衡"
+            f"（原文 {src.count(_QUOTE_ESC)} 处 + 中文引号，"
+            f"译文 {dst.count(_QUOTE_ESC)} 处 + 中文引号）")
     return msgs
 
 

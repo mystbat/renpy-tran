@@ -234,6 +234,89 @@ def test_skipped_segments_excluded_from_fuse():
 
 # ----------------------------- v3.1 §2.5 构造性不变量 -----------------------------
 
+def test_keep_original_and_reviewed_excluded_from_fuse():
+    """用户裁决 2026-10-26：保留原文与人工审校通过的行不进熔断检测。
+
+    * KEEP_ORIGINAL 天然无译文——早先被误报为 untranslated（用户实测：
+      审校待翻译 0 条、熔断未翻译 1 条，即 screens.rpy 空格保留段）；
+    * REVIEWED 是人工终态裁定，词法校验（tag_check）不得推翻人工结论
+      （转义引号风格差异等合法翻译曾被误拦）。
+    """
+    # KEEP_ORIGINAL 无译文：不得计入 untranslated
+    proj_ko = _project([
+        _seg(10, "say", "a.rpy:10", " ", status=SegmentStatus.KEEP_ORIGINAL),
+        _seg(11, "say", "a.rpy:11", "hi", target="你好", status=SegmentStatus.TRANSLATED),
+    ])
+    assert evaluate_export_fuse(proj_ko) == {}
+
+    # REVIEWED 行即使 tag 不一致（合法的引号风格转换）也不进 tag_check
+    proj_rv = _project([
+        _seg(12, "say", "a.rpy:12", 'He said \\"hi\\" to me',
+             target='他对我说『你好』', status=SegmentStatus.REVIEWED),
+    ])
+    assert evaluate_export_fuse(proj_rv) == {}
+
+    # 对照：机器产出（TRANSLATED）仍受检——用结构性转义做反例
+    # （引号转义已按等价规则放行，不再构成 tag_check）
+    proj_tr = _project([
+        _seg(13, "say", "a.rpy:13", "line1 \\n line2",
+             target="第一行\n第二行", status=SegmentStatus.TRANSLATED),
+    ])
+    d = evaluate_export_fuse(proj_tr)
+    assert "tag_check" in d
+    assert "13" in d["tag_check"][0]
+
+    # KEEP_DECLARED（AI 申报、待人工裁定）不是终态，仍受检
+    proj_kd = _project([
+        _seg(14, "say", "a.rpy:14", "hi", status=SegmentStatus.KEEP_DECLARED),
+    ])
+    d = evaluate_export_fuse(proj_kd)
+    assert "untranslated" in d
+
+
+# ----------------------------- 引号转义等价（BUGFIX quote-esc-equivalence）-------
+
+def test_quote_esc_to_cjk_quotes_is_ok():
+    """原文 \\" → 译文中文引号：合法翻译，不得报 tag_check。
+
+    用户实测误报样例：'He said \\"hi\\"' → 『你好』——6 条同类全被
+    旧的字面计数误拦。"""
+    from pytran.validators import tags_ok, tag_messages
+
+    assert tags_ok('He said \\"hi\\" to me', "他对我说『你好』")
+    assert tags_ok('Recall \\"The phrase\\" here', "回想『这句话』")
+    # 反向：原文用中文引号、译文用 \\" 转义，同样放行
+    assert tags_ok("他说『你好』", 'He said \\"hi\\"')
+
+
+def test_quote_esc_imbalance_still_fails():
+    """引号转义完全退出计数校验（最终版口径）。
+
+    BUGFIX(quote-esc-direction, 2026-10-26)：引号不改变 Ren'Py 文本结构，
+    数量不等/凭空出现/风格改写均为合法修辞，全部放行（用户实测 10 条
+    误报全属此类）。结构性转义（\\n 等）仍严格——见上一用例。"""
+    from pytran.validators import tags_ok
+
+    q = '\\"'   # 字面两字符：反斜杠 + 双引号
+
+    assert tags_ok('say something plain', f'说{q}强调{q}')       # 译文凭空引号 → 放行
+    assert tags_ok(f'say {q}quoted{q}', "纯文本无引号")          # 引号"丢失" → 放行
+    assert tags_ok(f'say {q}a{q} and {q}b{q}', "说甲和乙")       # 数量不等 → 放行
+    # 对照：结构转义不受此放宽影响
+    assert not tags_ok("line1 \\n line2", "第一行\n第二行")
+
+
+def test_structural_esc_still_strict():
+    """结构性转义（\\n 等）不放宽：计数不等仍要报。
+
+    uid=6274 真实案例：原文含字面 \\n，译文把它变成真实换行 → 仍应检出
+    （这可能是真问题，需人工确认）。"""
+    from pytran.validators import tags_ok
+
+    assert not tags_ok("line1 \\n line2", "第一行\n第二行")  # 字面 \n vs 真实换行
+    assert tags_ok("line1 \\n line2", "第一行 \\n 第二行")   # 保留字面 \n → OK
+
+
 def test_identity_violation_raises_on_source_mismatch():
     """任务书验收 4.1-6：身份命中但原文不一致必须在构造点显式爆炸。
 

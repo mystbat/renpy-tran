@@ -139,6 +139,10 @@ class PytranApp:
         # AI 校对运行态：是否在跑 + 停止标志（面板关闭时置位）
         self._audit_reviewing = False
         self._audit_review_stop = False
+        # BUGFIX(human-edit-guard, 2026-10-26)：会话内被人工保存过译文的
+        # uid 集合（失败重译前弹确认防覆盖）。内存态：跨会话无法追溯，
+        # 只保护本次会话内的修改——与 _written_back_files 同级语义。
+        self._human_edited_uids: set[int] = set()
 
     def on_event(self, name: str, data: dict) -> None:
         self._events.put((name, data or {}))
@@ -2705,16 +2709,53 @@ class PytranApp:
         与「开始自动翻译」分流：两者都只收 PENDING/FAILED（W5g §2 起，
         KEEP_DECLARED/KEEP_ORIGINAL 不再进队列），前者只针对失败行，
         语义与按钮文案一致。
+
+        BUGFIX(human-edit-guard, 2026-10-26)：人工修改过的 FAILED 行
+        重译会**无条件覆盖人工改动**（引擎每轮 _atomic_save 重写 target，
+        用户实测：uid=6274 手工改过却被下一轮重译回退）。这些行先弹
+        确认：用户可选择「跳过人工修改行」或「全部重译（覆盖）」。
         """
         if not self._ensure_engine_ready():
             return
+        from PyQt6.QtWidgets import QMessageBox
         from pytran.models import SegmentStatus
         failed = {s.uid for s in self.project.segments
                   if s.status == SegmentStatus.FAILED}
         if not failed:
-            from PyQt6.QtWidgets import QMessageBox
             QMessageBox.information(self._window, "重试", "当前没有失败项需要重试。")
             return
+
+        # 人工修改守卫：会话内被人工保存过 target 的 FAILED 行
+        edited = failed & getattr(self, "_human_edited_uids", set())
+        if edited:
+            box = QMessageBox(self._window)
+            box.setWindowTitle("人工修改保护")
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setText(
+                f"有 {len(edited)} 个失败项曾被人工修改过译文。\n"
+                "重译会覆盖人工修改。如何处理？")
+            btn_skip = box.addButton("跳过人工修改行（推荐）",
+                                     QMessageBox.ButtonRole.AcceptRole)
+            btn_overwrite = box.addButton("全部重译（覆盖人工修改）",
+                                          QMessageBox.ButtonRole.DestructiveRole)
+            box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is btn_skip:
+                failed -= edited
+                self._log(
+                    f"已跳过 {len(edited)} 个人工修改过的失败项"
+                    f"（uid: {sorted(edited)[:10]}…）。"
+                    "若确认无需保留，可先在审校界面重新保存后再重试。")
+                if not failed:
+                    QMessageBox.information(
+                        self._window, "重试",
+                        "全部失败项均被人工修改保护跳过，无需重译。")
+                    return
+            elif clicked is not btn_overwrite:
+                self._log("重试已取消")
+                return
+
         if not self._confirm_budget(only_uids=failed):
             return
         self._log(f"重试 {len(failed)} 个失败项……")
@@ -3043,7 +3084,14 @@ class PytranApp:
         ed = self._widgets.get("editor")
         if ed is not None:
             self.state.save_target(ed.toPlainText())
+            self._mark_human_edited()
         self._clear_dirty()
+
+    def _mark_human_edited(self) -> None:
+        """当前条目被人工保存过译文 → 记入人工修改集合（失败重译防覆盖）。"""
+        cur = self.state.current_review()
+        if cur is not None:
+            self._human_edited_uids.add(cur.uid)
 
     def _clear_dirty(self) -> None:
         self._review_dirty = False
@@ -3056,6 +3104,7 @@ class PytranApp:
         ed = self._widgets.get("editor")
         if ed is not None:
             self.state.save_target(ed.toPlainText())
+            self._mark_human_edited()
         self._clear_dirty()
         self._log("已保存当前译文。")
 
@@ -3064,6 +3113,7 @@ class PytranApp:
         ed = self._widgets.get("editor")
         if ed:
             self.state.save_target(ed.toPlainText())
+            self._mark_human_edited()
         self._clear_dirty()
         cur = self.state.current_review()
         if cur is None or not self.state.accept_current():
@@ -3300,12 +3350,17 @@ class PytranApp:
                             f"  [{uid}] 原文：{seg.source[:40]}\n"
                             f"        译文：{(seg.target or '')[:40]}")
                     break
+            # BUGFIX(fuse-wording, 2026-10-26)：v3.1 后错位已在匹配时被
+            # 构造点拦截，tag_check 只是转义/标签差异明细——"疑似错位"
+            # 措辞会误导用户（用户实测：10 条全是合法的引号风格转换被
+            # 误读为错位）。改为中性描述 + 提示可能为合法翻译。
             msg = (
                 "写回前熔断检查未通过：\n\n"
                 + "\n".join(detail_lines)
-                + ("\n\n疑似错位样例（原文/译文明显不对应）：\n" + "\n".join(sample)
+                + ("\n\n差异样例（标签/转义与原文不一致，**可能是合法翻译**，"
+                   "如引号风格转换；请逐条确认）：\n" + "\n".join(sample)
                    if sample else "")
-                + "\n\n强写会把错译文落进游戏目录。建议先回「审校」修正。\n"
+                + "\n\n强写可能把问题译文落进游戏目录。建议先回「审校」核对。\n"
                   "仍要强制写回吗？"
             )
             self._log("写回前熔断未通过：" + "；".join(detail_lines))

@@ -191,8 +191,22 @@ def evaluate_export_fuse(
     failed: list[str] = []
     tag_fail: list[str] = []
 
+    # BUGFIX(fuse-status-scope, 2026-10-26)：熔断只检查**机器产出**的行。
+    # KEEP_ORIGINAL（人工保留原文）与 REVIEWED（人工审校通过）是终态裁定，
+    # 不进熔断检测——用户裁决 2026-10-26：
+    # * KEEP_ORIGINAL 天然无译文，早先被误报为 untranslated（用户实测：
+    #   审校待翻译 0 条、熔断未翻译 1 条，即 uid=8869 screens.rpy 空格段）；
+    # * REVIEWED 行若被 tag_check 误报，会拦住人工确认过的合法翻译
+    #   （转义引号风格差异等）——人工裁定优先于词法校验。
+    # SKIPPED 既有排除保留。
+    _FUSE_EXEMPT = {
+        SegmentStatus.SKIPPED,
+        SegmentStatus.KEEP_ORIGINAL,
+        SegmentStatus.REVIEWED,
+    }
+
     for seg in project.segments:
-        if seg.status == SegmentStatus.SKIPPED:
+        if seg.status in _FUSE_EXEMPT:
             continue
         has_target = bool(seg.target and seg.target.strip())
         if not has_target:

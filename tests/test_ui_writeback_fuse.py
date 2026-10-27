@@ -1,4 +1,4 @@
-﻿"""写回前熔断（§6.3）回归测试 —— 2026-10-25 事故。
+"""写回前熔断（§6.3）回归测试 —— 2026-10-25 事故。
 
 事故链：
 1. ``backfill.match_translations`` 第 2 级缺文件约束，把 dlc.rpy 的 28 条
@@ -67,7 +67,13 @@ def _clean_segments() -> list[Segment]:
 
 
 def _tag_mismatch_segments() -> list[Segment]:
-    """复刻事故末条：原文纯文本，译文带 {image=...} 插值 → tag_check 不过。"""
+    """复刻事故末条：原文纯文本，译文带 {image=...} 插值 → tag_check 不过。
+
+    BUGFIX(fuse-status-scope, 2026-10-26)：状态由 REVIEWED 改为 TRANSLATED。
+    用户裁决「保留原文和人工审校通过的都无需进入熔断检测」后，REVIEWED
+    是人工终态，不进 tag_check；熔断检查的是**机器产出**（TRANSLATED）。
+    事故现场当时的段状态即机器产出后未过人工，用 TRANSLATED 更贴近本义。
+    """
     return [
         Segment(uid=2887254682, file="tl/chinese2/exp-1-3somes.rpy",
                 locator="# game/tl/chinese2/exp-1-3somes.rpy:15425",
@@ -75,7 +81,7 @@ def _tag_mismatch_segments() -> list[Segment]:
                 comment="", role="",
                 source="Take me to the Sylphir Island",
                 target="{image=it_qu.webp} 波泽拉的水晶球",
-                status=SegmentStatus.REVIEWED),
+                status=SegmentStatus.TRANSLATED),
     ]
 
 
