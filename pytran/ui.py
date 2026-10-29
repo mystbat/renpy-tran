@@ -487,12 +487,18 @@ class PytranApp:
                 return None
         return raw
 
-    def _apply_settings(self, values: dict) -> None:
+    def _apply_settings(self, values: dict) -> dict:
         """写回 config.ini（§9 L483 字段；ADR-0004：api_key 落盘本机 ini）。
 
         未配置模式（deps 为 None）下不构造 provider——写配置不需要网络依赖。
         ``_NUMERIC_ATTRS`` 中的字段留空/非法时保留既有值，其余（文本）字段
         允许清空。
+
+        BUGFIX(settings-live-reload, 2026-10-29)：保存后**立即**重建
+        self.deps（build_deps 内部会 Config.load 读回磁盘上的新 ini）
+        ——旧实现只写盘不重载，用户换 API Key 后必须重启程序才生效
+        （用户实测：旧 key 被删后程序仍拿内存里的旧 key 请求 → 401，
+        直到重启）。返回重载后的 config 供调用方回显。
         """
         from pytran.cli import build_deps
         cfg = (self.deps.config if self.deps is not None
@@ -503,6 +509,30 @@ class PytranApp:
                 continue  # 数值留空/非法 → 保留既有值
             setattr(cfg, attr, coerced)
         cfg.save(self.work_dir)
+        # BUGFIX(settings-live-reload, 2026-10-29) 最终方案：provider 配置
+        # **热更新**——不重建 deps（重建会构造真实 openai SDK 客户端，
+        # 其 C 层析构与 Qt 事件循环竞争导致进程 fastfail，测试实测）。
+        # * deps 为 None（未配置模式）→ 重建（首次配置 Key 的正常路径）；
+        # * deps.provider 有 reload_config → 热更新（真实运行路径）；
+        # * 测试注入的 Fake provider → 换 config 引用（duck-type 安全）。
+        # 磁盘是唯一事实来源：cfg.save 已落盘，provider.reload_config
+        # 持有同一 config 对象引用（setattr 后保存的就是它）。
+        if self.deps is None:
+            self.deps = build_deps(self.work_dir, allow_missing_provider=True)
+        else:
+            cfg_live = self.deps.config
+            provider = getattr(self.deps, "provider", None)
+            if provider is not None and hasattr(provider, "reload_config"):
+                provider.reload_config(cfg_live)
+            else:
+                # Fake/测试 provider：只更新其可见的 config 引用
+                if provider is not None:
+                    try:
+                        provider._config = cfg_live
+                    except Exception:  # noqa: BLE001 - 替身对象可能锁属性
+                        pass
+                # engine 依赖 provider，测试路径不重建（保持注入语义）
+        return self.deps.config
 
     def _validate_sdk(self, sdk_dir: str) -> "tuple[bool, str]":
         """§8.5：SDK 目录校验与引擎版本探测（复用 SdkBridgeImpl.probe）。"""
@@ -2091,7 +2121,29 @@ class PytranApp:
             values["enable_thinking"] = cb_thinking.isChecked()
             # FEATURE(fallback-thinking)：回退模型的思维链开关，独立字段。
             values["fallback_enable_thinking"] = cb_fb_thinking.isChecked()
-            self._apply_settings(values)
+            values["review_enable_thinking"] = cb_review_thinking.isChecked()
+            # BUGFIX(settings-live-reload)：保存后立即重载 deps——新 Key
+            # 不再需要重启程序。返回的 config 用于探测回显。
+            new_cfg = self._apply_settings(values)
+
+            # Key 有效性即时探测（用户 2026-10-29：换 Key 后 401 才发现
+            # 旧 Key 还在内存）。8 token 的最小请求，失败把服务器原因
+            # 直接告诉用户（余额不足 / Key 无效 / 模型名错）。
+            # 探测必须"尽力而为"：任何异常/挂起都不阻断保存流程
+            # （BUGFIX(probe-safe)：真实 HTTP 在部分环境（offscreen 测试、
+            # 代理异常）下不稳定，不能让它拖垮保存）。
+            key_probe = ""
+            if getattr(new_cfg, "api_key", ""):
+                provider = self.deps.provider if self.deps else None
+                if provider is not None and hasattr(provider, "review_text"):
+                    try:
+                        provider.review_text("回复ok", system="",
+                                             max_tokens=8, line_count=1)
+                        key_probe = "✓ API Key 已生效（探测请求成功）"
+                    except Exception as exc:  # noqa: BLE001
+                        key_probe = f"⚠ API Key 探测失败：{exc}"
+            else:
+                key_probe = "（未配置 API Key）"
 
             # 术语表：复用 terms.py 的纯逻辑（rows_to_terms 负责「空译名 +
             # 英文 → 自动进豁免」与「重复原文后者覆盖」），GUI 只做收集。
@@ -2162,6 +2214,7 @@ class PytranApp:
             # B6：保存结果汇总（W5b §3.2「弹窗汇总保存结果」）
             parts = [
                 f"已保存到 config.ini / {profile_path(self.work_dir).name}。",
+                key_probe,
                 f"术语 {len(latest.terms or {})} 条，"
                 f"免翻短语 {len(latest.exempt_english or [])} 条。",
             ]

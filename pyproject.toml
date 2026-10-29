@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pytran"
-version = "3.0.0"
+version = "3.1"
 description = "Ren'Py AI 汉化工具 3.0 —— 解包/反编译/翻译/审校/写回一体化"
 readme = "README.md"
 requires-python = ">=3.10"

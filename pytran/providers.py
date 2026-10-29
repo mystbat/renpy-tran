@@ -87,6 +87,21 @@ class OpenAIProvider:
         if self._client is None:
             self._client = self._build_client(config)
 
+    def reload_config(self, config: Config) -> None:
+        """配置热更新（BUGFIX settings-live-reload, 2026-10-29）。
+
+        设置界面保存后调用：换 API Key / 模型 / URL 无需重启程序。
+        重建底层 OpenAI 客户端（旧 client 由 GC 回收）。
+
+        测试注入的自定义 client（非 OpenAIProvider 构造路径）也一并替换
+        为按新 config 构建的 client——调用方（ui._apply_settings）负责
+        判断是否需要热更新；本方法总是执行。
+        """
+        self._config = config
+        self._client = self._build_client(config)
+        logger.info("provider 配置已热更新（model=%s, key=***)",
+                    getattr(config, "model", "?"))
+
     # -- 通用文本补全（非 Provider 契约） -------------------------------------
     def complete_text(self, prompt: str, system: str = "") -> str:
         """一次性文本补全（不走 JSONL 协议，W5c §2 信号源 C 用）。
