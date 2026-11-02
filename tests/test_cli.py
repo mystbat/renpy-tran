@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+import pytran.cli
 from pytran.cli import (
     check_level_policy,
     cmd_auto_batch,
@@ -234,3 +235,31 @@ def test_auto_batch_reports_no_games(work_dir: Path) -> None:
     deps.unren = FakeUnren()
     rc = cmd_auto_batch(parent, deps=deps, level=2, yes=True)
     assert rc == 2
+
+
+# --------------------------------------------------------------------------- #
+# 无参数启动（双击 exe）→ 默认进 GUI（BUGFIX: 3.1 zip 裸跑 exe 缺子命令报错）
+# --------------------------------------------------------------------------- #
+def test_main_no_args_launches_ui(monkeypatch, tmp_path: Path) -> None:
+    calls: list[Path] = []
+
+    def fake_cmd_ui(work_dir: Path) -> int:
+        calls.append(Path(work_dir))
+        return 0
+
+    monkeypatch.setattr("pytran.cli.cmd_ui", fake_cmd_ui)
+    monkeypatch.chdir(tmp_path)  # 源码模式下默认工程目录 = cwd
+    assert pytran.cli.main([]) == 0
+    assert calls == [tmp_path]  # 默认工程目录 = cwd
+
+
+def test_main_ui_subcommand_still_works(monkeypatch, tmp_path: Path) -> None:
+    calls: list[Path] = []
+
+    def fake_cmd_ui(work_dir: Path) -> int:
+        calls.append(Path(work_dir))
+        return 0
+
+    monkeypatch.setattr("pytran.cli.cmd_ui", fake_cmd_ui)
+    assert pytran.cli.main(["ui", "--work-dir", str(tmp_path / "w")]) == 0
+    assert calls == [tmp_path / "w"]

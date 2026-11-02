@@ -953,7 +953,7 @@ class PytranApp:
         self._set_app_icon(app)
             
         window = QMainWindow()
-        window.setWindowTitle("pytran 3.0 — Ren'Py AI 汉化工具")
+        window.setWindowTitle("pytran 3.1.1 — Ren'Py AI 汉化工具")
         window.resize(1100, 700)
         self._window = window
         

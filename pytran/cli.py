@@ -390,7 +390,7 @@ def build_deps(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="pytran", description="Ren'Py 汉化工具 3.0 命令行壳")
+    p = argparse.ArgumentParser(prog="pytran", description="Ren'Py 汉化工具 3.1.1 命令行壳")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     t = sub.add_parser("translate", help="纯文件模式：解析 rpy 并翻译（§13 M1）")
@@ -484,7 +484,23 @@ def _dispatch_ui(args, provider=None) -> int:
     return cmd_ui(Path(args.work_dir))
 
 
+def default_work_dir() -> Path:
+    """无参数启动（双击 exe / 裸命令）时的默认工程目录。
+
+    打包后的 exe：工程目录 = exe 所在目录（与 ``运行.bat`` 的
+    ``--work-dir %~dp0`` 同口径）；源码模式：当前工作目录。
+    """
+    if getattr(sys, "frozen", False):  # PyInstaller exe
+        return Path(sys.executable).resolve().parent
+    return Path.cwd()
+
+
 def main(argv: Optional[list[str]] = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv:
+        # 双击 exe 也要能用：无参数 → 默认启动 GUI，工程目录 = exe 所在目录。
+        return cmd_ui(default_work_dir())
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:

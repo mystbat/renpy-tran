@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# py-tran 3.0 —— PyInstaller 打包规格（--onedir 单目录分发）
+# py-tran 3.1.1 —— PyInstaller 打包规格（--onedir 单目录分发）
 #
 # 安全红线（ADR-0004 / §11 / §12）：本 spec 明确【排除】config.ini 与任何
 # 真实密钥；打包产物不含用户的 Key，运行期通过环境变量 TL_API_KEY 注入。
