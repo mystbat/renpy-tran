@@ -31,6 +31,12 @@ DIST = ROOT / "dist"
 APP = DIST / "pytran"
 
 # Qt 软件渲染后备 + PDF 模块：源码不 import，现代 Windows 无需
+#
+# 进一步瘦身候选（2026-11-02 已核实无人使用，未启用——收益仅 ~3MB 原始，
+# 启用前需重新构建并冒烟验证 GUI）：
+#     "Qt6Network*.dll",   # 1.7MB，网络走 httpx 不走 Qt
+#     "Qt6Svg*.dll",       # 0.6MB，无 svg 图标
+#     "qsvg*.dll",         # svg imageformat/iconengine 插件
 UNWANTED_DLL = [
     "opengl32sw.dll",
     "Qt6Pdf*.dll",
