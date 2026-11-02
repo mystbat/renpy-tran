@@ -15,12 +15,13 @@ import os
 
 block_cipher = None
 
-# 需要显式随包的数据（examples / 文档 / 图标），不含任何真实游戏或密钥
+# 需要显式随包的数据（文档 / 图标），不含任何真实游戏或密钥
+# 注：不随包 assets/pytran.png（4.7MB，代码无人引用，窗口图标只用 pytran.ico）
 datas = [
     ("config.example.ini", "."),
     ("README.md", "."),
     ("requirements.txt", "."),
-    ("assets", "assets"),
+    ("assets/pytran.ico", "assets"),
 ]
 
 # 二次保险：绝不把 config.ini / 真实数据打进包
@@ -59,6 +60,13 @@ a = Analysis(
         "*.rpyc",
         "*.rpa",
         "archive",
+        # openai 的可选依赖（openai.lib._parsing 才用得到），本项目代码不 import
+        "numpy",
+        "pandas",
+        "matplotlib",
+        "scipy",
+        "IPython",
+        "tkinter",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
